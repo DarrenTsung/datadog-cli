@@ -1,0 +1,24 @@
+load("@crate_index//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "datadog_utils",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2018",
+    deps = all_crate_deps(
+        normal = True,
+    ),
+)
+
+rust_test(
+    name = "datadog_utils_test",
+    crate = ":datadog_utils",
+    data = [
+        "//bazel/scripts:prettify_output_failures_junit_xml.py",
+        "//bazel/scripts:rust_junit_report_test_wrapper.sh",
+    ],
+)
+
+exports_files(["Cargo.toml"])

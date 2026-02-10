@@ -1,0 +1,3 @@
+[workspace]
+members = ["datadog-logs", "datadog-utils"]
+resolver = "2"

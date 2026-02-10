@@ -1,0 +1,12 @@
+[package]
+edition = "2018"
+name = "datadog_utils"
+publish = false
+version = "0.1.0"
+
+[dependencies]
+anyhow = "1.0"
+chrono = "0.4"
+once_cell = "1.5"
+regex = "1.5.5"
+url = "2.2.2"
