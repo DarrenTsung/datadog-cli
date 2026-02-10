@@ -43,10 +43,9 @@ struct Opt {
     #[structopt(long)]
     cursor: Option<String>,
 
-    /// Exit once this number of logs are found. Implementation is
-    /// best-effort, so output may result in slightly more logs than the this value.
+    /// Maximum number of log rows to output.
     #[structopt(long)]
-    exit_after: Option<usize>,
+    limit: Option<usize>,
 
     /// Comma-separated list of columns to include in output. Use @ as
     /// shorthand for attributes. (e.g. @version -> attributes.version).
@@ -212,6 +211,9 @@ async fn main() -> anyhow::Result<()> {
         };
 
         for log in &response.data {
+            if opt.limit.is_some_and(|l| total_processed >= l) {
+                break;
+            }
             let attrs = &log["attributes"];
             let mut obj = serde_json::Map::new();
             for (col_name, col_path) in &columns {
@@ -219,6 +221,7 @@ async fn main() -> anyhow::Result<()> {
                 obj.insert(col_name.clone(), val.clone());
             }
             println!("{}", serde_json::to_string(&Value::Object(obj))?);
+            total_processed += 1;
         }
 
         let next_cursor = response.meta.and_then(|meta| match &meta["page"]["after"] {
@@ -227,19 +230,14 @@ async fn main() -> anyhow::Result<()> {
             unknown => panic!("Received unknown value for meta.page.after: {:?}", unknown),
         });
 
-        total_processed += response.data.len();
         eprintln!(
-            "Finished processing page with {} items. Total processed: {}. Next cursor: {:?}.",
-            response.data.len(),
+            "Finished processing page. Total processed: {}. Next cursor: {:?}.",
             total_processed,
             next_cursor,
         );
 
-        if let Some(exit_after) = opt.exit_after {
-            if total_processed > exit_after {
-                eprintln!("Exiting because exit_after condition is met!");
-                break;
-            }
+        if opt.limit.is_some_and(|l| total_processed >= l) {
+            break;
         }
 
         if let Some(next_cursor) = next_cursor {
