@@ -7,6 +7,13 @@ You should usually be using this tool for exporting raw logs, unless you're look
 
 Actually, if you want to export logs outside of the main index, it should be possible. You'd need to [rehydrate the logs](https://docs.datadoghq.com/logs/log_configuration/rehydrating/)and export logs from the temporary index that's created instead of the main index. Take a look at the [API docs](https://docs.datadoghq.com/api/latest/logs/#search-logs) for the endpoint we're using.
 
+## Installation
+```
+cargo install --path datadog-logs
+```
+
+This installs the `datadog-logs` binary to `~/.cargo/bin`.
+
 ## Usage
 Here's a basic example of how to use this tool:
 ```

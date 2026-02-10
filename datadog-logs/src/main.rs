@@ -47,6 +47,15 @@ struct Opt {
     /// best-effort, so output may result in slightly more logs than the this value.
     #[structopt(long)]
     exit_after: Option<usize>,
+
+    /// Comma-separated list of columns to include in output. Use @ as
+    /// shorthand for attributes. (e.g. @version -> attributes.version).
+    #[structopt(long, default_value = "timestamp,service,message")]
+    columns: String,
+
+    /// Additional columns to append to --columns.
+    #[structopt(long)]
+    add_columns: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -74,9 +83,36 @@ struct SearchLogResponse {
     meta: Option<serde_json::Value>,
 }
 
+/// Resolve a dot-separated path like "attributes.version" into a nested JSON value.
+fn resolve_path<'a>(value: &'a Value, path: &str) -> &'a Value {
+    let mut current = value;
+    for segment in path.split('.') {
+        current = &current[segment];
+    }
+    current
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let opt = Opt::from_args();
+
+    let mut columns_str = opt.columns;
+    if let Some(add) = opt.add_columns {
+        columns_str = format!("{columns_str},{add}");
+    }
+
+    let columns: Vec<(String, String)> = columns_str
+        .split(',')
+        .map(|col| {
+            let col = col.trim().to_string();
+            let path = if let Some(rest) = col.strip_prefix('@') {
+                format!("attributes.{rest}")
+            } else {
+                col.clone()
+            };
+            (col, path)
+        })
+        .collect();
 
     let client = reqwest::Client::new();
     let (time_range, query) = if let Some(datadog_url) = opt.datadog_url {
@@ -176,7 +212,13 @@ async fn main() -> anyhow::Result<()> {
         };
 
         for log in &response.data {
-            println!("{}", serde_json::to_string(&log["attributes"])?);
+            let attrs = &log["attributes"];
+            let mut obj = serde_json::Map::new();
+            for (col_name, col_path) in &columns {
+                let val = resolve_path(attrs, col_path);
+                obj.insert(col_name.clone(), val.clone());
+            }
+            println!("{}", serde_json::to_string(&Value::Object(obj))?);
         }
 
         let next_cursor = response.meta.and_then(|meta| match &meta["page"]["after"] {
