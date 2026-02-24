@@ -335,7 +335,10 @@ pub async fn run_unfurl(
             if let Some(image_url) = &og_image_url {
                 let path = format!("/tmp/dd-widget-{}.png", target_id);
                 match download_to_file(image_url, &path).await {
-                    Ok(()) => eprintln!("Snapshot: {}", path),
+                    Ok(()) => {
+                        eprintln!("Snapshot: {}", path);
+                        eprintln!("(Tip: the snapshot may include cursor annotations — timestamp and count — not shown above)");
+                    }
                     Err(e) => eprintln!("Failed to download snapshot: {}", e),
                 }
             }

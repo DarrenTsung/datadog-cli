@@ -1,0 +1,62 @@
+---
+name: datadog-unfurl
+description: Unfurl a Datadog dashboard URL (e.g. https://app.datadoghq.com/s/e16e18c08/yry-azg-bva) — resolve shared links, show widget details, and download the snapshot image. Use when the user pastes a Datadog dashboard or shared link and wants to understand what it shows.
+---
+
+# Datadog Unfurl
+
+`datadog unfurl` takes a Datadog URL, resolves it, and shows a human-readable summary of the widget(s) along with a snapshot image.
+
+## Usage
+
+```bash
+# Shared short link (resolves automatically)
+datadog unfurl "https://app.datadoghq.com/s/e16e18c08/yry-azg-bva"
+
+# Direct dashboard URL with a focused widget
+datadog unfurl "https://app.datadoghq.com/dashboard/5iv-bx7-9xp/multiplayer-v2?fullscreen_widget=3737456056966802"
+
+# Full dashboard (no widget focus) — lists all widgets
+datadog unfurl "https://app.datadoghq.com/dashboard/5iv-bx7-9xp/multiplayer-v2"
+
+# Full JSON output
+datadog unfurl "https://app.datadoghq.com/s/e16e18c08/yry-azg-bva" --json
+```
+
+## What it does
+
+1. **Resolves `/s/` short links** — follows the redirect and extracts the real dashboard URL
+2. **Fetches the dashboard** via the Datadog API
+3. **Shows widget details** — title, type, formulas, and metric queries in a readable format
+4. **Downloads the snapshot image** to `/tmp/dd-widget-<ID>.png` (for shared links only — this is the same `og:image` that Slack unfurls)
+
+## Supported URL formats
+
+| Format | Example |
+|--------|---------|
+| Shared link | `https://app.datadoghq.com/s/TOKEN/ID` |
+| Dashboard with widget | `https://app.datadoghq.com/dashboard/ID/title?fullscreen_widget=123` |
+| Dashboard (all widgets) | `https://app.datadoghq.com/dashboard/ID/title` |
+
+## Widget focus
+
+If the URL contains `fullscreen_widget` or `tile_focus` query params, only that specific widget is shown. This is the default when using shared links created from a focused widget.
+
+## Snapshot image
+
+When unfurling a shared link, the tool downloads the `og:image` — the exact same image Slack shows when you paste the link. This image may include cursor annotations (timestamp and metric count) that aren't available in the text output.
+
+## Example output
+
+```
+Resolving short link...
+Dashboard: Multiplayer (13 widgets)
+## File Download and Launch Failed  [id: 3737456056966802]
+Type: timeseries
+
+Request 1:
+  Formula: default_zero(query1)
+  Query (query1): sum:multiplayer.docs.load_failed{$env,$pod_name} by {error}.as_count()
+Snapshot: /tmp/dd-widget-3737456056966802.png
+(Tip: the snapshot may include cursor annotations — timestamp and count — not shown above)
+```
