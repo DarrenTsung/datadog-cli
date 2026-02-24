@@ -1,0 +1,305 @@
+use anyhow::{bail, Context};
+
+use super::cells::{Cell, LogQueryCell};
+
+#[derive(Debug)]
+enum State {
+    Normal,
+    InRegularFence,
+    InLogQuery,
+}
+
+/// Parse a markdown document into a sequence of notebook cells.
+///
+/// Prose becomes `Cell::Markdown`, and ` ```log-query ` fenced blocks become
+/// `Cell::LogQuery` (their body is parsed as JSON).
+pub fn parse_markdown(input: &str) -> anyhow::Result<Vec<Cell>> {
+    let mut cells = Vec::new();
+    let mut state = State::Normal;
+    let mut buffer = String::new();
+
+    for line in input.lines() {
+        let trimmed = line.trim();
+
+        match state {
+            State::Normal => {
+                if trimmed.strip_prefix("```").is_some_and(|rest| {
+                    let tag = rest.trim();
+                    tag.eq_ignore_ascii_case("log-query")
+                }) {
+                    // Flush accumulated markdown (if non-empty after trimming blank lines).
+                    flush_markdown(&mut buffer, &mut cells);
+                    state = State::InLogQuery;
+                } else if trimmed.starts_with("```") && trimmed.len() > 3 {
+                    // Opening a regular fenced code block (e.g. ```python).
+                    buffer.push_str(line);
+                    buffer.push('\n');
+                    state = State::InRegularFence;
+                } else {
+                    buffer.push_str(line);
+                    buffer.push('\n');
+                }
+            }
+            State::InRegularFence => {
+                buffer.push_str(line);
+                buffer.push('\n');
+                if trimmed == "```" {
+                    state = State::Normal;
+                }
+            }
+            State::InLogQuery => {
+                if trimmed == "```" {
+                    let json_str = buffer.trim();
+                    let log_query: LogQueryCell = serde_json::from_str(json_str)
+                        .with_context(|| {
+                            format!("Invalid JSON in log-query block: {json_str}")
+                        })?;
+                    cells.push(Cell::LogQuery(log_query));
+                    buffer.clear();
+                    state = State::Normal;
+                } else {
+                    buffer.push_str(line);
+                    buffer.push('\n');
+                }
+            }
+        }
+    }
+
+    match state {
+        State::InLogQuery => bail!("Unterminated log-query code block"),
+        State::InRegularFence => {
+            // Unterminated regular fence — just treat everything as markdown.
+            flush_markdown(&mut buffer, &mut cells);
+        }
+        State::Normal => {
+            flush_markdown(&mut buffer, &mut cells);
+        }
+    }
+
+    Ok(cells)
+}
+
+/// If `buffer` contains non-whitespace content, push it as a `Cell::Markdown`
+/// and clear the buffer. Leading/trailing blank lines are stripped.
+fn flush_markdown(buffer: &mut String, cells: &mut Vec<Cell>) {
+    let trimmed = trim_blank_lines(buffer);
+    if !trimmed.is_empty() {
+        cells.push(Cell::Markdown(trimmed));
+    }
+    buffer.clear();
+}
+
+/// Strip leading and trailing blank lines, but preserve internal structure.
+fn trim_blank_lines(s: &str) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    let start = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(0);
+    let end = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .map_or(0, |i| i + 1);
+    if start >= end {
+        return String::new();
+    }
+    lines[start..end].join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::cells;
+    use super::*;
+
+    #[test]
+    fn pure_markdown() {
+        let input = "# Hello\nText";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(cells, vec![Cell::Markdown("# Hello\nText".to_string())]);
+    }
+
+    #[test]
+    fn single_log_query() {
+        let input = "```log-query\n{\"query\":\"env:prod\"}\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(
+            cells,
+            vec![Cell::LogQuery(LogQueryCell {
+                query: "env:prod".to_string(),
+                indexes: None,
+                time: None,
+            })]
+        );
+    }
+
+    #[test]
+    fn mixed_md_logquery_md() {
+        let input = "# Title\n\n```log-query\n{\"query\":\"env:prod\"}\n```\n\nFooter text";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[0], Cell::Markdown("# Title".to_string()));
+        assert_eq!(
+            cells[1],
+            Cell::LogQuery(LogQueryCell {
+                query: "env:prod".to_string(),
+                indexes: None,
+                time: None,
+            })
+        );
+        assert_eq!(cells[2], Cell::Markdown("Footer text".to_string()));
+    }
+
+    #[test]
+    fn multiple_log_query_blocks() {
+        let input =
+            "```log-query\n{\"query\":\"a\"}\n```\n\nMiddle\n\n```log-query\n{\"query\":\"b\"}\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(cells.len(), 3);
+        assert_eq!(
+            cells[0],
+            Cell::LogQuery(LogQueryCell {
+                query: "a".to_string(),
+                indexes: None,
+                time: None,
+            })
+        );
+        assert!(matches!(&cells[1], Cell::Markdown(_)));
+        assert_eq!(
+            cells[2],
+            Cell::LogQuery(LogQueryCell {
+                query: "b".to_string(),
+                indexes: None,
+                time: None,
+            })
+        );
+    }
+
+    #[test]
+    fn adjacent_log_query_blocks_no_empty_markdown() {
+        let input = "```log-query\n{\"query\":\"a\"}\n```\n```log-query\n{\"query\":\"b\"}\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(cells.len(), 2);
+        assert!(matches!(&cells[0], Cell::LogQuery(_)));
+        assert!(matches!(&cells[1], Cell::LogQuery(_)));
+    }
+
+    #[test]
+    fn log_query_with_indexes() {
+        let input = "```log-query\n{\"query\":\"env:prod\",\"indexes\":[\"main\"]}\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(
+            cells,
+            vec![Cell::LogQuery(LogQueryCell {
+                query: "env:prod".to_string(),
+                indexes: Some(vec!["main".to_string()]),
+                time: None,
+            })]
+        );
+    }
+
+    #[test]
+    fn regular_code_fence_preserved_as_markdown() {
+        let input = "```python\nprint(\"hi\")\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(cells.len(), 1);
+        match &cells[0] {
+            Cell::Markdown(text) => {
+                assert!(text.contains("```python"));
+                assert!(text.contains("print(\"hi\")"));
+                assert!(text.contains("```"));
+            }
+            _ => panic!("Expected Markdown cell"),
+        }
+    }
+
+    #[test]
+    fn log_query_tag_inside_regular_fence_not_special() {
+        let input = "```markdown\n```log-query\n{\"query\":\"a\"}\n```\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(cells.len(), 1);
+        assert!(matches!(&cells[0], Cell::Markdown(_)));
+    }
+
+    #[test]
+    fn invalid_json_in_log_query() {
+        let input = "```log-query\nnot json\n```";
+        let result = parse_markdown(input);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid JSON in log-query block"), "{}", err);
+    }
+
+    #[test]
+    fn missing_query_field() {
+        let input = "```log-query\n{\"indexes\":[\"main\"]}\n```";
+        let result = parse_markdown(input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unterminated_log_query_block() {
+        let input = "```log-query\n{\"query\":\"a\"}";
+        let result = parse_markdown(input);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Unterminated log-query code block"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn empty_document() {
+        let cells = parse_markdown("").unwrap();
+        assert!(cells.is_empty());
+    }
+
+    #[test]
+    fn whitespace_only() {
+        let cells = parse_markdown("  \n  ").unwrap();
+        assert!(cells.is_empty());
+    }
+
+    #[test]
+    fn trailing_spaces_on_fence() {
+        let input = "```log-query   \n{\"query\":\"env:prod\"}\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(
+            cells,
+            vec![Cell::LogQuery(LogQueryCell {
+                query: "env:prod".to_string(),
+                indexes: None,
+                time: None,
+            })]
+        );
+    }
+
+    #[test]
+    fn log_query_with_relative_time() {
+        let input = "```log-query\n{\"query\":\"env:prod\",\"time\":\"4h\"}\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(
+            cells,
+            vec![Cell::LogQuery(LogQueryCell {
+                query: "env:prod".to_string(),
+                indexes: None,
+                time: Some(cells::CellTime::Relative("4h".to_string())),
+            })]
+        );
+    }
+
+    #[test]
+    fn log_query_with_absolute_time() {
+        let input = "```log-query\n{\"query\":\"env:prod\",\"time\":{\"start\":\"2026-02-20T00:00:00Z\",\"end\":\"2026-02-24T00:00:00Z\"}}\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(
+            cells,
+            vec![Cell::LogQuery(LogQueryCell {
+                query: "env:prod".to_string(),
+                indexes: None,
+                time: Some(cells::CellTime::Absolute {
+                    start: "2026-02-20T00:00:00Z".parse().unwrap(),
+                    end: "2026-02-24T00:00:00Z".parse().unwrap(),
+                }),
+            })]
+        );
+    }
+}

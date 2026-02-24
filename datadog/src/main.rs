@@ -1,3 +1,5 @@
+mod notebooks;
+
 use anyhow::{anyhow, Context};
 use datadog_utils::TimeRange;
 use serde_derive::{Deserialize, Serialize};
@@ -26,6 +28,8 @@ struct Opt {
 enum Command {
     /// Collect logs from the Datadog log API.
     Logs(LogsOpt),
+    /// Manage Datadog notebooks from markdown files.
+    Notebooks(notebooks::NotebooksOpt),
 }
 
 #[derive(StructOpt, Debug)]
@@ -106,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
 
     match opt.cmd {
         Command::Logs(logs_opt) => run_logs(&opt.dd_api_key, &opt.dd_application_key, logs_opt).await,
+        Command::Notebooks(nb_opt) => notebooks::run_notebooks(&opt.dd_api_key, &opt.dd_application_key, nb_opt).await,
     }
 }
 
