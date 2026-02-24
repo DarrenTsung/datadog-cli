@@ -88,7 +88,7 @@ pub async fn run_notebooks(
             let response =
                 api::create_notebook(api_key, app_key, &title, &cells, live_span).await?;
             if let Some(data) = response.data {
-                println!("Created notebook {} ({})", data.id, data.attributes.name);
+                println!("Created notebook: https://app.datadoghq.com/notebook/{}", data.id);
             }
         }
         NotebooksCommand::Update {
@@ -119,7 +119,7 @@ pub async fn run_notebooks(
             let response =
                 api::update_notebook(api_key, app_key, id, &title, &cells, live_span).await?;
             if let Some(data) = response.data {
-                println!("Updated notebook {} ({})", data.id, data.attributes.name);
+                println!("Updated notebook: https://app.datadoghq.com/notebook/{}", data.id);
             }
         }
         NotebooksCommand::Delete { id } => {

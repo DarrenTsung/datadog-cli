@@ -19,12 +19,13 @@ Any regular markdown — headings, paragraphs, lists, links, images — becomes 
 
 A fenced code block tagged ` ```log-query ` is parsed as JSON and becomes a **Log Stream cell**. The JSON body must have a `query` field and optionally `indexes` and `time` fields:
 
-Relative time (span string):
+With columns and relative time:
 
 ```json
 {
   "query": "service:web env:production",
   "indexes": ["main"],
+  "columns": ["@backend", "@error", "@resp_type"],
   "time": "4h"
 }
 ```
@@ -42,6 +43,7 @@ Absolute time (start/end range):
 |-----------|----------|--------------------------------------------------------------|
 | `query`   | Yes      | Datadog log query string                                     |
 | `indexes` | No       | List of log indexes to search (default: all)                 |
+| `columns` | No       | List of columns to display (e.g. `["@backend", "@error"]`)   |
 | `time`    | No       | Per-cell time override. Either a relative span string (e.g. `"4h"`) or an absolute range object (see below). If omitted, uses the notebook's global time from `--time`. |
 
 ## Example markdown file

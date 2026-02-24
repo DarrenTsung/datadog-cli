@@ -20,6 +20,7 @@ pub enum Cell {
 pub struct LogQueryCell {
     pub query: String,
     pub indexes: Option<Vec<String>>,
+    pub columns: Option<Vec<String>>,
     pub time: Option<CellTime>,
 }
 
@@ -63,6 +64,9 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
             if let Some(indexes) = &log_query.indexes {
                 definition.indexes = Some(indexes.clone());
             }
+            if let Some(columns) = &log_query.columns {
+                definition.columns = Some(columns.clone());
+            }
             let mut attrs = NotebookLogStreamCellAttributes::new(definition);
             if let Some(cell_time) = &log_query.time {
                 attrs.time = Some(Some(cell_time_to_notebook_cell_time(cell_time)));
@@ -105,6 +109,7 @@ mod tests {
         let cell = Cell::LogQuery(LogQueryCell {
             query: "env:prod".to_string(),
             indexes: Some(vec!["main".to_string()]),
+            columns: None,
             time: None,
         });
         let request = cell_to_create_request(&cell);
@@ -132,6 +137,7 @@ mod tests {
         let cell = Cell::LogQuery(LogQueryCell {
             query: "service:web".to_string(),
             indexes: None,
+            columns: None,
             time: None,
         });
         let request = cell_to_create_request(&cell);
@@ -152,6 +158,7 @@ mod tests {
             Cell::LogQuery(LogQueryCell {
                 query: "env:prod".to_string(),
                 indexes: None,
+                columns: None,
                 time: None,
             }),
             Cell::Markdown("third".to_string()),
@@ -178,6 +185,7 @@ mod tests {
         let cell = Cell::LogQuery(LogQueryCell {
             query: "env:prod".to_string(),
             indexes: None,
+            columns: None,
             time: Some(CellTime::Relative("4h".to_string())),
         });
         let request = cell_to_create_request(&cell);
@@ -196,12 +204,34 @@ mod tests {
     }
 
     #[test]
+    fn log_query_cell_with_columns() {
+        let cell = Cell::LogQuery(LogQueryCell {
+            query: "env:prod".to_string(),
+            indexes: None,
+            columns: Some(vec!["@backend".to_string(), "@error".to_string()]),
+            time: None,
+        });
+        let request = cell_to_create_request(&cell);
+
+        match &request.attributes {
+            NotebookCellCreateRequestAttributes::NotebookLogStreamCellAttributes(attrs) => {
+                assert_eq!(
+                    attrs.definition.columns,
+                    Some(vec!["@backend".to_string(), "@error".to_string()])
+                );
+            }
+            _ => panic!("Expected NotebookLogStreamCellAttributes"),
+        }
+    }
+
+    #[test]
     fn log_query_cell_with_absolute_time() {
         let start: DateTime<Utc> = "2026-02-20T00:00:00Z".parse().unwrap();
         let end: DateTime<Utc> = "2026-02-24T00:00:00Z".parse().unwrap();
         let cell = Cell::LogQuery(LogQueryCell {
             query: "env:prod".to_string(),
             indexes: None,
+            columns: None,
             time: Some(CellTime::Absolute { start, end }),
         });
         let request = cell_to_create_request(&cell);

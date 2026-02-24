@@ -124,6 +124,7 @@ mod tests {
             vec![Cell::LogQuery(LogQueryCell {
                 query: "env:prod".to_string(),
                 indexes: None,
+                columns: None,
                 time: None,
             })]
         );
@@ -140,6 +141,7 @@ mod tests {
             Cell::LogQuery(LogQueryCell {
                 query: "env:prod".to_string(),
                 indexes: None,
+                columns: None,
                 time: None,
             })
         );
@@ -157,6 +159,7 @@ mod tests {
             Cell::LogQuery(LogQueryCell {
                 query: "a".to_string(),
                 indexes: None,
+                columns: None,
                 time: None,
             })
         );
@@ -166,6 +169,7 @@ mod tests {
             Cell::LogQuery(LogQueryCell {
                 query: "b".to_string(),
                 indexes: None,
+                columns: None,
                 time: None,
             })
         );
@@ -189,6 +193,7 @@ mod tests {
             vec![Cell::LogQuery(LogQueryCell {
                 query: "env:prod".to_string(),
                 indexes: Some(vec!["main".to_string()]),
+                columns: None,
                 time: None,
             })]
         );
@@ -267,6 +272,7 @@ mod tests {
             vec![Cell::LogQuery(LogQueryCell {
                 query: "env:prod".to_string(),
                 indexes: None,
+                columns: None,
                 time: None,
             })]
         );
@@ -281,6 +287,7 @@ mod tests {
             vec![Cell::LogQuery(LogQueryCell {
                 query: "env:prod".to_string(),
                 indexes: None,
+                columns: None,
                 time: Some(cells::CellTime::Relative("4h".to_string())),
             })]
         );
@@ -295,6 +302,7 @@ mod tests {
             vec![Cell::LogQuery(LogQueryCell {
                 query: "env:prod".to_string(),
                 indexes: None,
+                columns: None,
                 time: Some(cells::CellTime::Absolute {
                     start: "2026-02-20T00:00:00Z".parse().unwrap(),
                     end: "2026-02-24T00:00:00Z".parse().unwrap(),
