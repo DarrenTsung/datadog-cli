@@ -27,12 +27,12 @@ struct Opt {
 
 #[derive(StructOpt, Debug)]
 enum Command {
-    /// Interact with Datadog dashboards.
-    Dashboard(dashboard::DashboardOpt),
     /// Collect logs from the Datadog log API.
     Logs(LogsOpt),
     /// Manage Datadog notebooks from markdown files.
     Notebooks(notebooks::NotebooksOpt),
+    /// Unfurl a Datadog URL — show widget info and download the snapshot image.
+    Unfurl(dashboard::UnfurlOpt),
 }
 
 #[derive(StructOpt, Debug)]
@@ -112,9 +112,9 @@ async fn main() -> anyhow::Result<()> {
     let opt = Opt::from_args();
 
     match opt.cmd {
-        Command::Dashboard(db_opt) => dashboard::run_dashboard(&opt.dd_api_key, &opt.dd_application_key, db_opt).await,
         Command::Logs(logs_opt) => run_logs(&opt.dd_api_key, &opt.dd_application_key, logs_opt).await,
         Command::Notebooks(nb_opt) => notebooks::run_notebooks(&opt.dd_api_key, &opt.dd_application_key, nb_opt).await,
+        Command::Unfurl(unfurl_opt) => dashboard::run_unfurl(&opt.dd_api_key, &opt.dd_application_key, unfurl_opt).await,
     }
 }
 

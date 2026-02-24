@@ -4,26 +4,16 @@ use anyhow::{anyhow, bail, Context};
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
-pub struct DashboardOpt {
-    #[structopt(subcommand)]
-    cmd: DashboardCommand,
-}
+pub struct UnfurlOpt {
+    /// Datadog URL. Supports direct dashboard URLs (/dashboard/ID/...) and
+    /// shared short links (/s/TOKEN/ID) which are resolved automatically.
+    /// If the URL contains a fullscreen_widget or tile_focus query param,
+    /// only that widget is shown.
+    url: String,
 
-#[derive(StructOpt, Debug)]
-pub enum DashboardCommand {
-    /// Extract widget definitions from a dashboard URL.
-    Widgets {
-        /// Dashboard URL. Supports direct URLs (/dashboard/ID/...) and shared
-        /// short links (/s/TOKEN/ID) which are resolved automatically.
-        /// If the URL contains a fullscreen_widget or tile_focus query param,
-        /// only that widget is printed.
-        #[structopt(long)]
-        url: String,
-
-        /// Output full JSON instead of a human-readable summary.
-        #[structopt(long)]
-        json: bool,
-    },
+    /// Output full JSON instead of a human-readable summary.
+    #[structopt(long)]
+    json: bool,
 }
 
 #[derive(Debug)]
@@ -31,6 +21,9 @@ struct ParsedDashboardUrl {
     dashboard_id: String,
     /// Widget ID from `fullscreen_widget` or `tile_focus` query param.
     widget_id: Option<i64>,
+    /// Epoch-millisecond timestamps from `from_ts` / `to_ts` query params.
+    from_ts: Option<i64>,
+    to_ts: Option<i64>,
 }
 
 fn parse_dashboard_url(url: &str) -> anyhow::Result<ParsedDashboardUrl> {
@@ -50,20 +43,20 @@ fn parse_dashboard_url(url: &str) -> anyhow::Result<ParsedDashboardUrl> {
         }
     };
 
-    // Extract widget ID from fullscreen_widget or tile_focus query params.
-    let widget_id = parsed
-        .query_pairs()
-        .find_map(|(k, v)| {
-            if k == "fullscreen_widget" || k == "tile_focus" {
-                v.parse::<i64>().ok()
-            } else {
-                None
-            }
-        });
+    let get_param = |name: &str| -> Option<i64> {
+        parsed
+            .query_pairs()
+            .find_map(|(k, v)| if k == name { v.parse().ok() } else { None })
+    };
+
+    let widget_id =
+        get_param("fullscreen_widget").or_else(|| get_param("tile_focus"));
 
     Ok(ParsedDashboardUrl {
         dashboard_id,
         widget_id,
+        from_ts: get_param("from_ts"),
+        to_ts: get_param("to_ts"),
     })
 }
 
@@ -74,9 +67,15 @@ fn is_short_link(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+struct ResolvedShortLink {
+    dashboard_url: String,
+    /// The og:image URL from the shared link page (the same image Slack unfurls).
+    og_image_url: Option<String>,
+}
+
 /// Follow the /s/ short link redirect. Datadog renders these as a SPA, but the
 /// initial HTML contains a meta refresh or JS redirect with the real URL.
-async fn resolve_short_link(url: &str) -> anyhow::Result<String> {
+async fn resolve_short_link(url: &str) -> anyhow::Result<ResolvedShortLink> {
     eprintln!("Resolving short link...");
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
@@ -86,18 +85,25 @@ async fn resolve_short_link(url: &str) -> anyhow::Result<String> {
     let final_url = resp.url().to_string();
     let body = resp.text().await?;
 
+    let og_image_url = extract_og_image(&body);
+
     // If the redirect landed on a /dashboard/ URL, use it directly.
     if final_url.contains("/dashboard/") {
         let decoded = final_url.replace("&amp;", "&");
         eprintln!("Resolved to: {}", decoded);
-        return Ok(decoded);
+        return Ok(ResolvedShortLink {
+            dashboard_url: decoded,
+            og_image_url,
+        });
     }
 
     // Otherwise, Datadog renders a SPA — look for the dashboard URL in the HTML.
-    // Common patterns: window.location.href, meta refresh, or data attributes.
     if let Some(dashboard_url) = extract_dashboard_url_from_html(&body) {
         eprintln!("Resolved to: {}", dashboard_url);
-        return Ok(dashboard_url);
+        return Ok(ResolvedShortLink {
+            dashboard_url,
+            og_image_url,
+        });
     }
 
     Err(anyhow!(
@@ -105,6 +111,19 @@ async fn resolve_short_link(url: &str) -> anyhow::Result<String> {
          Try opening {} in a browser and passing the resolved URL directly.",
         url
     ))
+}
+
+/// Extract og:image URL from HTML meta tags.
+fn extract_og_image(html: &str) -> Option<String> {
+    // Look for: <meta property="og:image" content="URL" />
+    let marker = "og:image";
+    let pos = html.find(marker)?;
+    let rest = &html[pos..];
+    let content_pos = rest.find("content=\"")?;
+    let url_start = content_pos + "content=\"".len();
+    let url_rest = &rest[url_start..];
+    let url_end = url_rest.find('"')?;
+    Some(url_rest[..url_end].to_string())
 }
 
 /// Scan HTML body for a /dashboard/ URL and decode HTML entities.
@@ -257,6 +276,19 @@ fn indent(s: &str, prefix: &str) -> String {
         .join("\n")
 }
 
+/// Download a URL to a file.
+async fn download_to_file(url: &str, path: &str) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .context("Failed to download snapshot")?;
+    let bytes = resp.bytes().await?;
+    std::fs::write(path, &bytes).context("Failed to write snapshot file")?;
+    Ok(())
+}
+
 fn format_widgets(widgets: &[serde_json::Value]) -> String {
     widgets
         .iter()
@@ -265,49 +297,55 @@ fn format_widgets(widgets: &[serde_json::Value]) -> String {
         .join("\n")
 }
 
-pub async fn run_dashboard(
+pub async fn run_unfurl(
     api_key: &str,
     app_key: &str,
-    opt: DashboardOpt,
+    opt: UnfurlOpt,
 ) -> anyhow::Result<()> {
-    match opt.cmd {
-        DashboardCommand::Widgets { url, json } => {
-            let resolved_url = if is_short_link(&url) {
-                resolve_short_link(&url).await?
+    let (resolved_url, og_image_url) = if is_short_link(&opt.url) {
+        let resolved = resolve_short_link(&opt.url).await?;
+        (resolved.dashboard_url, resolved.og_image_url)
+    } else {
+        (opt.url, None)
+    };
+    let parsed = parse_dashboard_url(&resolved_url)?;
+    let dashboard = api::get_dashboard(api_key, app_key, &parsed.dashboard_id).await?;
+
+    eprintln!(
+        "Dashboard: {} ({} widgets)",
+        dashboard.title,
+        dashboard.widgets.len()
+    );
+
+    // Serialize to serde_json::Value so we can search by widget ID.
+    let widgets_value = serde_json::to_value(&dashboard.widgets)?;
+    let widgets_array = widgets_value
+        .as_array()
+        .ok_or_else(|| anyhow!("Expected widgets array"))?;
+
+    if let Some(target_id) = parsed.widget_id {
+        if let Some(widget) = find_widget_by_id(widgets_array, target_id) {
+            if opt.json {
+                println!("{}", serde_json::to_string_pretty(&widget)?);
             } else {
-                url
-            };
-            let parsed = parse_dashboard_url(&resolved_url)?;
-            let dashboard = api::get_dashboard(api_key, app_key, &parsed.dashboard_id).await?;
-
-            eprintln!(
-                "Dashboard: {} ({} widgets)",
-                dashboard.title,
-                dashboard.widgets.len()
-            );
-
-            // Serialize to serde_json::Value so we can search by widget ID.
-            let widgets_value = serde_json::to_value(&dashboard.widgets)?;
-            let widgets_array = widgets_value
-                .as_array()
-                .ok_or_else(|| anyhow!("Expected widgets array"))?;
-
-            if let Some(target_id) = parsed.widget_id {
-                if let Some(widget) = find_widget_by_id(widgets_array, target_id) {
-                    if json {
-                        println!("{}", serde_json::to_string_pretty(&widget)?);
-                    } else {
-                        print!("{}", format_widget(&widget));
-                    }
-                } else {
-                    return Err(anyhow!("Widget {} not found in dashboard", target_id));
-                }
-            } else if json {
-                println!("{}", serde_json::to_string_pretty(&widgets_array)?);
-            } else {
-                print!("{}", format_widgets(widgets_array));
+                print!("{}", format_widget(&widget));
             }
+
+            // Download the og:image from the shared link (same image Slack shows).
+            if let Some(image_url) = &og_image_url {
+                let path = format!("/tmp/dd-widget-{}.png", target_id);
+                match download_to_file(image_url, &path).await {
+                    Ok(()) => eprintln!("Snapshot: {}", path),
+                    Err(e) => eprintln!("Failed to download snapshot: {}", e),
+                }
+            }
+        } else {
+            return Err(anyhow!("Widget {} not found in dashboard", target_id));
         }
+    } else if opt.json {
+        println!("{}", serde_json::to_string_pretty(&widgets_array)?);
+    } else {
+        print!("{}", format_widgets(widgets_array));
     }
 
     Ok(())
@@ -396,5 +434,27 @@ mod tests {
         let widgets: Vec<serde_json::Value> =
             serde_json::from_str(r#"[{"id": 1, "definition": {"type": "timeseries"}}]"#).unwrap();
         assert!(find_widget_by_id(&widgets, 999).is_none());
+    }
+
+    #[test]
+    fn extract_og_image_works() {
+        let html = r#"<meta property="og:image" content="https://p.datadoghq.com/s/image/e16e18c08/hkh-d76-9vd.png" />"#;
+        assert_eq!(
+            extract_og_image(html).unwrap(),
+            "https://p.datadoghq.com/s/image/e16e18c08/hkh-d76-9vd.png"
+        );
+    }
+
+    #[test]
+    fn extract_og_image_none() {
+        assert!(extract_og_image("<html>no image</html>").is_none());
+    }
+
+    #[test]
+    fn parse_url_with_timestamps() {
+        let url = "https://app.datadoghq.com/dashboard/5iv-bx7-9xp/title?from_ts=1770759395143&to_ts=1771968995143&fullscreen_widget=123";
+        let parsed = parse_dashboard_url(url).unwrap();
+        assert_eq!(parsed.from_ts, Some(1770759395143));
+        assert_eq!(parsed.to_ts, Some(1771968995143));
     }
 }
