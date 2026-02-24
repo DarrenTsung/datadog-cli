@@ -8,11 +8,28 @@ use structopt::StructOpt;
 use tokio::time::sleep;
 
 #[derive(StructOpt, Debug)]
-#[structopt(
-    name = "datadog-logs",
-    about = "A tool for collecting logs from the Datadog log API."
-)]
+#[structopt(name = "datadog", about = "A CLI for interacting with the Datadog API.")]
 struct Opt {
+    /// The Datadog API key, see: https://app.datadoghq.com/organization-settings/api-keys
+    #[structopt(long, env = "DD_API_KEY", hide_env_values = true)]
+    dd_api_key: String,
+
+    /// The Datadog application key, see: https://app.datadoghq.com/organization-settings/application-keys
+    #[structopt(long, env = "DD_APPLICATION_KEY", hide_env_values = true)]
+    dd_application_key: String,
+
+    #[structopt(subcommand)]
+    cmd: Command,
+}
+
+#[derive(StructOpt, Debug)]
+enum Command {
+    /// Collect logs from the Datadog log API.
+    Logs(LogsOpt),
+}
+
+#[derive(StructOpt, Debug)]
+struct LogsOpt {
     /// The datadog url of the log search page. If this is present, it is used to derive
     /// the time range and query!
     #[structopt(long)]
@@ -30,14 +47,6 @@ struct Opt {
     /// You must provide this if datadog_url is not provided.
     #[structopt(long)]
     query: Option<String>,
-
-    /// The Datadog API key, see: https://app.datadoghq.com/organization-settings/api-keys
-    #[structopt(long, env = "DD_API_KEY", hide_env_values = true)]
-    dd_api_key: String,
-
-    /// The Datadog application key, see: https://app.datadoghq.com/organization-settings/application-keys
-    #[structopt(long, env = "DD_APPLICATION_KEY", hide_env_values = true)]
-    dd_application_key: String,
 
     /// (Optional) The cursor to provide for the initial API call. Use this to resume pagination after a search was cut-off.
     #[structopt(long)]
@@ -95,6 +104,12 @@ fn resolve_path<'a>(value: &'a Value, path: &str) -> &'a Value {
 async fn main() -> anyhow::Result<()> {
     let opt = Opt::from_args();
 
+    match opt.cmd {
+        Command::Logs(logs_opt) => run_logs(&opt.dd_api_key, &opt.dd_application_key, logs_opt).await,
+    }
+}
+
+async fn run_logs(dd_api_key: &str, dd_application_key: &str, opt: LogsOpt) -> anyhow::Result<()> {
     let mut columns_str = opt.columns;
     if let Some(add) = opt.add_columns {
         columns_str = format!("{columns_str},{add}");
@@ -162,8 +177,8 @@ async fn main() -> anyhow::Result<()> {
     loop {
         let response = client
             .post("https://api.datadoghq.com/api/v2/logs/events/search")
-            .header("DD-API-KEY", opt.dd_api_key.clone())
-            .header("DD-APPLICATION-KEY", opt.dd_application_key.clone())
+            .header("DD-API-KEY", dd_api_key)
+            .header("DD-APPLICATION-KEY", dd_application_key)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .json(&request)
             .send()
