@@ -5,7 +5,7 @@ description: Search and export Datadog logs from the command line. Use when the 
 
 # Datadog Logs CLI
 
-The `datadog logs` subcommand searches Datadog logs and outputs each row as a JSON object. It paginates automatically and handles rate limits with retries.
+The `datadog logs` subcommand searches Datadog logs and outputs each row as a JSON object. It paginates automatically and handles rate limits with retries. It uses the **flex storage tier** by default, which covers both recent and older logs (beyond the ~3 day online/standard tier window).
 
 ## Authentication
 

@@ -87,6 +87,7 @@ struct Filter {
     from: String,
     to: String,
     query: String,
+    storage_tier: String,
 }
 
 #[derive(Serialize)]
@@ -178,6 +179,7 @@ async fn run_logs(dd_api_key: &str, dd_application_key: &str, opt: LogsOpt) -> a
             from: time_range.from.to_rfc3339(),
             to: time_range.to.to_rfc3339(),
             query,
+            storage_tier: "flex".to_string(),
         },
         page: Page {
             cursor: opt.cursor,
