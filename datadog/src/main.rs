@@ -80,8 +80,8 @@ struct LogsOpt {
     all_columns: bool,
 
     /// Sort order for log entries: "newest" (default) or "oldest".
-    #[structopt(long, default_value = "newest")]
-    sort: SortOrder,
+    #[structopt(long = "sort-by", default_value = "newest")]
+    sort_by: SortOrder,
 }
 
 #[derive(Debug, Clone)]
@@ -225,7 +225,7 @@ async fn run_logs(dd_api_key: &str, dd_application_key: &str, opt: LogsOpt) -> a
             query,
             storage_tier: "flex".to_string(),
         },
-        sort: opt.sort.to_api_value().to_string(),
+        sort: opt.sort_by.to_api_value().to_string(),
         page: Page {
             cursor: opt.cursor,
             limit: 1_000,

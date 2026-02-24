@@ -83,7 +83,7 @@ datadog logs --time-range "last 1 day" --query "service:web" \
 | `--columns`       | No                                | Comma-separated columns to include (default: `timestamp,service,message`)  |
 | `--add-columns`   | No                                | Comma-separated columns to append to `--columns`                           |
 | `--all-columns`   | No                                | Output all attributes for each log entry instead of selected columns       |
-| `--sort`          | No                                | Sort order: `newest` (default) or `oldest`                                 |
+| `--sort-by`       | No                                | Sort order: `newest` (default) or `oldest`                                 |
 
 *Either `--datadog-url` or both `--time-range` and `--query` must be provided.
 
