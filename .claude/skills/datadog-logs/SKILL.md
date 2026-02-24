@@ -82,6 +82,8 @@ datadog logs --time-range "last 1 day" --query "service:web" \
 | `--limit`         | No                                | Maximum number of log rows to output                                       |
 | `--columns`       | No                                | Comma-separated columns to include (default: `timestamp,service,message`)  |
 | `--add-columns`   | No                                | Comma-separated columns to append to `--columns`                           |
+| `--all-columns`   | No                                | Output all attributes for each log entry instead of selected columns       |
+| `--sort`          | No                                | Sort order: `newest` (default) or `oldest`                                 |
 
 *Either `--datadog-url` or both `--time-range` and `--query` must be provided.
 
@@ -90,6 +92,7 @@ datadog logs --time-range "last 1 day" --query "service:web" \
 - Plain names resolve under `attributes`: `service` -> `attributes.service`
 - `@` prefix is shorthand for `attributes.`: `@version` -> `attributes.version`
 - Nested paths work: `@file.key` -> `attributes.file.key`
+- Tag fallback: if a column isn't found in `attributes`, it's looked up in the `tags` array (e.g. `pod_name`, `kube_namespace`, `env`)
 
 ## Output format
 

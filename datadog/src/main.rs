@@ -74,11 +74,46 @@ struct LogsOpt {
     /// Additional columns to append to --columns.
     #[structopt(long)]
     add_columns: Option<String>,
+
+    /// Output all attributes for each log entry instead of selected columns.
+    #[structopt(long)]
+    all_columns: bool,
+
+    /// Sort order for log entries: "newest" (default) or "oldest".
+    #[structopt(long, default_value = "newest")]
+    sort: SortOrder,
+}
+
+#[derive(Debug, Clone)]
+enum SortOrder {
+    Newest,
+    Oldest,
+}
+
+impl FromStr for SortOrder {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "newest" => Ok(SortOrder::Newest),
+            "oldest" => Ok(SortOrder::Oldest),
+            other => Err(anyhow!("Invalid sort order '{}': expected 'newest' or 'oldest'", other)),
+        }
+    }
+}
+
+impl SortOrder {
+    fn to_api_value(&self) -> &'static str {
+        match self {
+            SortOrder::Newest => "-timestamp",
+            SortOrder::Oldest => "timestamp",
+        }
+    }
 }
 
 #[derive(Serialize)]
 struct SearchLogRequest {
     filter: Filter,
+    sort: String,
     page: Page,
 }
 
@@ -109,6 +144,15 @@ fn resolve_path<'a>(value: &'a Value, path: &str) -> &'a Value {
         current = &current[segment];
     }
     current
+}
+
+/// Extract a value from the tags array (e.g. "pod_name" from "pod_name:some-value").
+fn extract_tag(tags: &Value, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    tags.as_array()?.iter().find_map(|tag| {
+        let s = tag.as_str()?;
+        s.strip_prefix(&prefix).map(|v| v.to_string())
+    })
 }
 
 #[tokio::main]
@@ -181,6 +225,7 @@ async fn run_logs(dd_api_key: &str, dd_application_key: &str, opt: LogsOpt) -> a
             query,
             storage_tier: "flex".to_string(),
         },
+        sort: opt.sort.to_api_value().to_string(),
         page: Page {
             cursor: opt.cursor,
             limit: 1_000,
@@ -245,12 +290,25 @@ async fn run_logs(dd_api_key: &str, dd_application_key: &str, opt: LogsOpt) -> a
                 break;
             }
             let attrs = &log["attributes"];
-            let mut obj = serde_json::Map::new();
-            for (col_name, col_path) in &columns {
-                let val = resolve_path(attrs, col_path);
-                obj.insert(col_name.clone(), val.clone());
+            let tags = &attrs["tags"];
+            if opt.all_columns {
+                println!("{}", serde_json::to_string(attrs)?);
+            } else {
+                let mut obj = serde_json::Map::new();
+                for (col_name, col_path) in &columns {
+                    let val = resolve_path(attrs, col_path);
+                    if val.is_null() {
+                        if let Some(tag_val) = extract_tag(tags, col_name) {
+                            obj.insert(col_name.clone(), Value::String(tag_val));
+                        } else {
+                            obj.insert(col_name.clone(), val.clone());
+                        }
+                    } else {
+                        obj.insert(col_name.clone(), val.clone());
+                    }
+                }
+                println!("{}", serde_json::to_string(&Value::Object(obj))?);
             }
-            println!("{}", serde_json::to_string(&Value::Object(obj))?);
             total_processed += 1;
         }
 
