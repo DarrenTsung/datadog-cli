@@ -1,4 +1,5 @@
 mod dashboard;
+mod metrics;
 mod notebooks;
 
 use anyhow::{anyhow, Context};
@@ -31,6 +32,8 @@ enum Command {
     Logs(LogsOpt),
     /// Manage Datadog notebooks from markdown files.
     Notebooks(notebooks::NotebooksOpt),
+    /// Query Datadog metrics.
+    Metrics(metrics::MetricsOpt),
     /// Unfurl a Datadog URL — show widget info and download the snapshot image.
     Unfurl(dashboard::UnfurlOpt),
 }
@@ -113,6 +116,7 @@ async fn main() -> anyhow::Result<()> {
 
     match opt.cmd {
         Command::Logs(logs_opt) => run_logs(&opt.dd_api_key, &opt.dd_application_key, logs_opt).await,
+        Command::Metrics(m_opt) => metrics::run_metrics(&opt.dd_api_key, &opt.dd_application_key, m_opt).await,
         Command::Notebooks(nb_opt) => notebooks::run_notebooks(&opt.dd_api_key, &opt.dd_application_key, nb_opt).await,
         Command::Unfurl(unfurl_opt) => dashboard::run_unfurl(&opt.dd_api_key, &opt.dd_application_key, unfurl_opt).await,
     }
