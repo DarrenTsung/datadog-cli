@@ -17,7 +17,7 @@ Any regular markdown — headings, paragraphs, lists, links, images — becomes 
 
 ### Log queries (becomes Log Stream cells)
 
-A fenced code block tagged ` ```log-query ` is parsed as JSON and becomes a **Log Stream cell**. The JSON body must have a `query` field and optionally `indexes` and `time` fields:
+A fenced code block tagged ` ```log-query ` is parsed as JSON and becomes a **Log Stream cell**. The JSON body must have a `query` field and optionally `indexes`, `columns`, and `time` fields:
 
 With columns and relative time:
 
@@ -46,12 +46,34 @@ Absolute time (start/end range):
 | `columns` | No       | List of columns to display (e.g. `["@backend", "@error"]`)   |
 | `time`    | No       | Per-cell time override. Either a relative span string (e.g. `"4h"`) or an absolute range object (see below). If omitted, uses the notebook's global time from `--time`. |
 
+### Metric queries (becomes Timeseries cells)
+
+A fenced code block tagged ` ```metric-query ` is parsed as JSON and becomes a **Timeseries cell**. The JSON body must have a `query` field and optionally a `time` field:
+
+```json
+{
+  "query": "avg:system.cpu.user{env:production}",
+  "time": "4h"
+}
+```
+
+| Field   | Required | Description                                                  |
+|---------|----------|--------------------------------------------------------------|
+| `query` | Yes      | Datadog metric query string (e.g. `"avg:system.cpu.user{*}"`) |
+| `time`  | No       | Per-cell time override (same format as log-query `time`). If omitted, uses the notebook's global time from `--time`. |
+
 ## Example markdown file
 
 ````markdown
 # Production Error Investigation
 
 We've seen a spike in 5xx errors from the auth service.
+
+## CPU usage during the incident
+
+```metric-query
+{"query": "avg:system.cpu.user{service:auth,env:production}", "time": "4h"}
+```
 
 ## Auth service errors
 
@@ -73,13 +95,14 @@ Errors appear clustered around 2pm UTC. Let's check the downstream database serv
 - Review connection pool settings
 ````
 
-This produces 5 notebook cells:
+This produces 6 notebook cells:
 
 1. **Markdown** — title and intro paragraph
-2. **Log Stream** — `service:auth status:error env:production`
-3. **Markdown** — analysis paragraph and "Database timeouts" heading
-4. **Log Stream** — `service:postgres-proxy @duration:>5000 env:production` (index: main, time: 1d)
-5. **Markdown** — "Next steps" list
+2. **Timeseries** — `avg:system.cpu.user{service:auth,env:production}` (time: 4h)
+3. **Log Stream** — `service:auth status:error env:production`
+4. **Markdown** — analysis paragraph and "Database timeouts" heading
+5. **Log Stream** — `service:postgres-proxy @duration:>5000 env:production` (index: main, time: 1d)
+6. **Markdown** — "Next steps" list
 
 ## CLI usage
 
@@ -105,7 +128,7 @@ datadog notebooks delete --id 12345
 
 ## Time span values
 
-The `--time` CLI flag sets the notebook's global time span (default: `1h`). Individual log-query cells can override this with the `"time"` JSON field.
+The `--time` CLI flag sets the notebook's global time span (default: `1h`). Individual log-query and metric-query cells can override this with the `"time"` JSON field.
 
 | Value | Meaning          |
 |-------|------------------|
@@ -122,10 +145,10 @@ The `--time` CLI flag sets the notebook's global time span (default: `1h`). Indi
 
 ## Rules
 
-- Empty or whitespace-only markdown between log-query blocks is dropped (no empty cells)
+- Empty or whitespace-only markdown between special blocks is dropped (no empty cells)
 - Leading/trailing blank lines on markdown cells are trimmed
 - Regular code fences (` ```python `, ` ```json `, etc.) are treated as normal markdown
-- A ` ```log-query ` inside another fenced block is **not** treated as special
-- Unterminated ` ```log-query ` blocks produce an error
-- Invalid JSON inside a log-query block produces an error
-- The `query` field is required in log-query JSON; missing it is an error
+- A ` ```log-query ` or ` ```metric-query ` inside another fenced block is **not** treated as special
+- Unterminated ` ```log-query ` or ` ```metric-query ` blocks produce an error
+- Invalid JSON inside a special block produces an error
+- The `query` field is required in both log-query and metric-query JSON; missing it is an error

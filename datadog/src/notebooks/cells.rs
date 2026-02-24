@@ -4,7 +4,8 @@ use datadog_api_client::datadogV1::model::{
     NotebookCellCreateRequest, NotebookCellCreateRequestAttributes, NotebookCellResourceType,
     NotebookCellTime, NotebookLogStreamCellAttributes, NotebookMarkdownCellAttributes,
     NotebookMarkdownCellDefinition, NotebookMarkdownCellDefinitionType, NotebookRelativeTime,
-    WidgetLiveSpan,
+    NotebookTimeseriesCellAttributes, TimeseriesWidgetDefinition,
+    TimeseriesWidgetDefinitionType, TimeseriesWidgetRequest, WidgetLiveSpan,
 };
 use serde_derive::Deserialize;
 
@@ -14,6 +15,7 @@ use super::api::parse_live_span;
 pub enum Cell {
     Markdown(String),
     LogQuery(LogQueryCell),
+    MetricQuery(MetricQueryCell),
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -21,6 +23,12 @@ pub struct LogQueryCell {
     pub query: String,
     pub indexes: Option<Vec<String>>,
     pub columns: Option<Vec<String>>,
+    pub time: Option<CellTime>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct MetricQueryCell {
+    pub query: String,
     pub time: Option<CellTime>,
 }
 
@@ -72,6 +80,18 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
                 attrs.time = Some(Some(cell_time_to_notebook_cell_time(cell_time)));
             }
             NotebookCellCreateRequestAttributes::NotebookLogStreamCellAttributes(Box::new(attrs))
+        }
+        Cell::MetricQuery(metric_query) => {
+            let request = TimeseriesWidgetRequest::new().q(metric_query.query.clone());
+            let definition = TimeseriesWidgetDefinition::new(
+                vec![request],
+                TimeseriesWidgetDefinitionType::TIMESERIES,
+            );
+            let mut attrs = NotebookTimeseriesCellAttributes::new(definition);
+            if let Some(cell_time) = &metric_query.time {
+                attrs.time = Some(Some(cell_time_to_notebook_cell_time(cell_time)));
+            }
+            NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(Box::new(attrs))
         }
     };
 
@@ -221,6 +241,53 @@ mod tests {
                 );
             }
             _ => panic!("Expected NotebookLogStreamCellAttributes"),
+        }
+    }
+
+    #[test]
+    fn metric_query_cell_to_create_request() {
+        let cell = Cell::MetricQuery(MetricQueryCell {
+            query: "avg:system.cpu.user{env:production}".to_string(),
+            time: None,
+        });
+        let request = cell_to_create_request(&cell);
+
+        assert_eq!(request.type_, NotebookCellResourceType::NOTEBOOK_CELLS);
+        match &request.attributes {
+            NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(attrs) => {
+                assert_eq!(attrs.definition.requests.len(), 1);
+                assert_eq!(
+                    attrs.definition.requests[0].q.as_deref(),
+                    Some("avg:system.cpu.user{env:production}")
+                );
+                assert_eq!(
+                    attrs.definition.type_,
+                    TimeseriesWidgetDefinitionType::TIMESERIES
+                );
+                assert_eq!(attrs.time, None);
+            }
+            _ => panic!("Expected NotebookTimeseriesCellAttributes"),
+        }
+    }
+
+    #[test]
+    fn metric_query_cell_with_relative_time() {
+        let cell = Cell::MetricQuery(MetricQueryCell {
+            query: "avg:system.cpu.user{*}".to_string(),
+            time: Some(CellTime::Relative("1h".to_string())),
+        });
+        let request = cell_to_create_request(&cell);
+
+        match &request.attributes {
+            NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(attrs) => {
+                match &attrs.time {
+                    Some(Some(NotebookCellTime::NotebookRelativeTime(rt))) => {
+                        assert_eq!(rt.live_span, WidgetLiveSpan::PAST_ONE_HOUR);
+                    }
+                    other => panic!("Expected NotebookRelativeTime, got {:?}", other),
+                }
+            }
+            _ => panic!("Expected NotebookTimeseriesCellAttributes"),
         }
     }
 

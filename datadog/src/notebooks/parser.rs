@@ -1,12 +1,13 @@
 use anyhow::{bail, Context};
 
-use super::cells::{Cell, LogQueryCell};
+use super::cells::{Cell, LogQueryCell, MetricQueryCell};
 
 #[derive(Debug)]
 enum State {
     Normal,
     InRegularFence,
     InLogQuery,
+    InMetricQuery,
 }
 
 /// Parse a markdown document into a sequence of notebook cells.
@@ -27,9 +28,14 @@ pub fn parse_markdown(input: &str) -> anyhow::Result<Vec<Cell>> {
                     let tag = rest.trim();
                     tag.eq_ignore_ascii_case("log-query")
                 }) {
-                    // Flush accumulated markdown (if non-empty after trimming blank lines).
                     flush_markdown(&mut buffer, &mut cells);
                     state = State::InLogQuery;
+                } else if trimmed.strip_prefix("```").is_some_and(|rest| {
+                    let tag = rest.trim();
+                    tag.eq_ignore_ascii_case("metric-query")
+                }) {
+                    flush_markdown(&mut buffer, &mut cells);
+                    state = State::InMetricQuery;
                 } else if trimmed.starts_with("```") && trimmed.len() > 3 {
                     // Opening a regular fenced code block (e.g. ```python).
                     buffer.push_str(line);
@@ -62,11 +68,27 @@ pub fn parse_markdown(input: &str) -> anyhow::Result<Vec<Cell>> {
                     buffer.push('\n');
                 }
             }
+            State::InMetricQuery => {
+                if trimmed == "```" {
+                    let json_str = buffer.trim();
+                    let metric_query: MetricQueryCell = serde_json::from_str(json_str)
+                        .with_context(|| {
+                            format!("Invalid JSON in metric-query block: {json_str}")
+                        })?;
+                    cells.push(Cell::MetricQuery(metric_query));
+                    buffer.clear();
+                    state = State::Normal;
+                } else {
+                    buffer.push_str(line);
+                    buffer.push('\n');
+                }
+            }
         }
     }
 
     match state {
         State::InLogQuery => bail!("Unterminated log-query code block"),
+        State::InMetricQuery => bail!("Unterminated metric-query code block"),
         State::InRegularFence => {
             // Unterminated regular fence — just treat everything as markdown.
             flush_markdown(&mut buffer, &mut cells);
@@ -308,6 +330,70 @@ mod tests {
                     end: "2026-02-24T00:00:00Z".parse().unwrap(),
                 }),
             })]
+        );
+    }
+
+    #[test]
+    fn single_metric_query() {
+        let input =
+            "```metric-query\n{\"query\":\"avg:system.cpu.user{env:production}\"}\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(
+            cells,
+            vec![Cell::MetricQuery(MetricQueryCell {
+                query: "avg:system.cpu.user{env:production}".to_string(),
+                time: None,
+            })]
+        );
+    }
+
+    #[test]
+    fn metric_query_with_time() {
+        let input =
+            "```metric-query\n{\"query\":\"avg:system.cpu.user{*}\",\"time\":\"4h\"}\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(
+            cells,
+            vec![Cell::MetricQuery(MetricQueryCell {
+                query: "avg:system.cpu.user{*}".to_string(),
+                time: Some(cells::CellTime::Relative("4h".to_string())),
+            })]
+        );
+    }
+
+    #[test]
+    fn mixed_log_and_metric_queries() {
+        let input = "# Title\n\n```log-query\n{\"query\":\"env:prod\"}\n```\n\n```metric-query\n{\"query\":\"avg:system.cpu.user{*}\"}\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(cells.len(), 3);
+        assert!(matches!(&cells[0], Cell::Markdown(_)));
+        assert!(matches!(&cells[1], Cell::LogQuery(_)));
+        assert!(matches!(&cells[2], Cell::MetricQuery(_)));
+    }
+
+    #[test]
+    fn unterminated_metric_query_block() {
+        let input = "```metric-query\n{\"query\":\"avg:system.cpu.user{*}\"}";
+        let result = parse_markdown(input);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Unterminated metric-query code block"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn invalid_json_in_metric_query() {
+        let input = "```metric-query\nnot json\n```";
+        let result = parse_markdown(input);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Invalid JSON in metric-query block"),
+            "{}",
+            err
         );
     }
 }
