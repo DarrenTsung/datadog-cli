@@ -3,7 +3,7 @@ mod api;
 use crate::events;
 use crate::metrics;
 
-use chrono::{Duration, Local, TimeZone, Utc};
+use chrono::{Local, TimeZone, Utc};
 use datadog_api_client::datadogV1::model::{Monitor, MonitorType};
 use datadog_api_client::datadogV2::api::api_events::ListEventsOptionalParams;
 use datadog_api_client::datadogV2::model::EventsSort;
@@ -255,14 +255,6 @@ fn print_monitor_summary(monitor: &Monitor, raw: bool) {
     }
 }
 
-/// Extend a time range by `padding` on each side.
-fn widen_time_range(tr: &TimeRange, padding: Duration) -> TimeRange {
-    TimeRange {
-        from: tr.from - padding,
-        to: tr.to + padding,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
@@ -319,17 +311,19 @@ async fn run_monitors_inspect(
     // 5. Print monitor summary.
     print_monitor_summary(&monitor, raw);
 
-    // 6. If event_id is present, fetch and display the trigger event.
+    // 6. If event_id is numeric, fetch it via the V1 get_event API.
+    //    The notification link (Slack/email) has a numeric event_id, but
+    //    Datadog's UI remaps it to an opaque base64 blob that isn't
+    //    reversible — so we can only fetch numeric IDs.
     if let Some(ref eid) = event_id {
-        if !raw {
-            println!();
-            println!("---");
-            println!();
+        if let Ok(numeric_id) = eid.parse::<i64>() {
+            if !raw {
+                println!();
+                println!("---");
+                println!();
+            }
+            print_trigger_event(api_key, app_key, numeric_id, raw).await;
         }
-        // Use a wide search window for the trigger event — the URL's time
-        // range is for the metric chart, not the event itself.
-        let event_range = widen_time_range(&time_range, chrono::Duration::hours(24));
-        fetch_and_print_trigger_event(api_key, app_key, eid, &event_range, raw).await?;
     }
 
     // 7. If metric/query alert type, extract and query the underlying metric.
@@ -427,7 +421,7 @@ async fn run_monitors_inspect(
         }
     }
 
-    // 8. Query monitor events.
+    // 7. Query monitor events.
     if !raw {
         println!();
         println!("---");
@@ -435,7 +429,7 @@ async fn run_monitors_inspect(
         println!("## Monitor Events");
     }
 
-    let monitor_event_query = format!("source:monitor @monitor_id:{}", input.monitor_id);
+    let monitor_event_query = format!("source:alert {}", input.monitor_id);
     let params = ListEventsOptionalParams::default()
         .filter_from(time_range.from.to_rfc3339())
         .filter_to(time_range.to.to_rfc3339())
@@ -503,84 +497,69 @@ async fn run_monitors_inspect(
     Ok(())
 }
 
-async fn fetch_and_print_trigger_event(
-    api_key: &str,
-    app_key: &str,
-    event_id: &str,
-    time_range: &TimeRange,
-    raw: bool,
-) -> anyhow::Result<()> {
-    // Search for the specific event by ID.
-    let query = format!("@evt.id:{}", event_id);
-    let params = ListEventsOptionalParams::default()
-        .filter_from(time_range.from.to_rfc3339())
-        .filter_to(time_range.to.to_rfc3339())
-        .filter_query(query)
-        .page_limit(1);
-
-    match events::api::list_events(api_key, app_key, params).await {
+async fn print_trigger_event(api_key: &str, app_key: &str, event_id: i64, raw: bool) {
+    match events::api::get_event(api_key, app_key, event_id).await {
         Ok(response) => {
-            let events = response.data.unwrap_or_default();
-            if let Some(event) = events.first() {
-                let outer_attrs = event.attributes.as_ref();
-                let inner_attrs = outer_attrs.and_then(|a| a.attributes.as_ref());
-
+            if let Some(event) = response.event {
                 if raw {
-                    println!(
-                        "{}",
-                        serde_json::json!({
-                            "section": "trigger_event",
-                            "event_id": event_id,
-                            "timestamp": outer_attrs.and_then(|a| a.timestamp).map(|t| t.to_rfc3339()),
-                            "title": inner_attrs.and_then(|a| a.title.clone()),
-                            "status": inner_attrs.and_then(|a| a.status.as_ref()).map(|s| format!("{:?}", s)),
-                            "message": outer_attrs.and_then(|a| a.message.clone()),
-                            "tags": outer_attrs.and_then(|a| a.tags.clone()),
-                        })
-                    );
-                } else {
-                    println!("## Trigger Event");
-
-                    let timestamp = outer_attrs
-                        .and_then(|a| a.timestamp)
-                        .map(|t| t.with_timezone(&Local).format("%Y-%m-%d %H:%M PT").to_string())
-                        .unwrap_or_else(|| "?".to_string());
-                    let title = inner_attrs
-                        .and_then(|a| a.title.clone())
-                        .unwrap_or_else(|| "(no title)".to_string());
-                    let status = inner_attrs
-                        .and_then(|a| a.status.as_ref())
-                        .map(|s| format!("{:?}", s))
-                        .unwrap_or_else(|| "?".to_string());
-
-                    println!("Time: {}", timestamp);
-                    println!("Status: {}", status);
-                    println!("Title: {}", title);
-
-                    // Show tags as groups if available.
-                    if let Some(tags) = outer_attrs.and_then(|a| a.tags.as_ref()) {
-                        if !tags.is_empty() {
-                            println!("Groups: {}", tags.join(", "));
-                        }
+                    if let Ok(json) = serde_json::to_string(&event) {
+                        println!("{}", json);
                     }
+                    return;
+                }
 
-                    if let Some(msg) = outer_attrs.and_then(|a| a.message.clone()) {
-                        if !msg.is_empty() {
-                            println!();
-                            for line in msg.lines().take(10) {
-                                println!("  {}", line);
-                            }
+                println!("## Trigger Event");
+
+                let timestamp = event
+                    .date_happened
+                    .map(|epoch_s| {
+                        Utc.timestamp_opt(epoch_s, 0)
+                            .unwrap()
+                            .with_timezone(&Local)
+                            .format("%Y-%m-%d %H:%M PT")
+                            .to_string()
+                    })
+                    .unwrap_or_else(|| "?".to_string());
+                let title = event.title.as_deref().unwrap_or("(no title)");
+                let alert_type = event
+                    .alert_type
+                    .as_ref()
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+
+                println!("Time: {}", timestamp);
+                println!("Alert Type: {}", alert_type);
+                println!("Title: {}", title);
+
+                if let Some(tags) = &event.tags {
+                    if !tags.is_empty() {
+                        println!("Tags: {}", tags.join(", "));
+                    }
+                }
+
+                if let Some(text) = &event.text {
+                    if !text.is_empty() {
+                        println!();
+                        // Strip Datadog markdown delimiters.
+                        let text = text
+                            .trim_start_matches("%%% \n")
+                            .trim_end_matches("\n %%%")
+                            .trim();
+                        for line in text.lines().take(20) {
+                            println!("  {}", line);
                         }
                     }
                 }
-            } else if raw {
-                println!(
-                    "{}",
-                    serde_json::json!({"section": "trigger_event", "error": "event not found", "event_id": event_id})
-                );
             } else {
-                println!("## Trigger Event");
-                println!("(event {} not found in this time range)", event_id);
+                if raw {
+                    println!(
+                        "{}",
+                        serde_json::json!({"section": "trigger_event", "error": "event not found"})
+                    );
+                } else {
+                    println!("## Trigger Event");
+                    println!("(event {} not found)", event_id);
+                }
             }
         }
         Err(err) => {
@@ -594,8 +573,6 @@ async fn fetch_and_print_trigger_event(
             }
         }
     }
-
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
