@@ -17,6 +17,7 @@ pub struct UnfurlOpt {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct ParsedDashboardUrl {
     dashboard_id: String,
     /// Widget ID from `fullscreen_widget` or `tile_focus` query param.

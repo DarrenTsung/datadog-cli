@@ -38,9 +38,17 @@ pub struct EventsOpt {
     #[structopt(long)]
     add_tags: Option<String>,
 
+    /// Comma-separated tags to exclude from output.
+    #[structopt(long)]
+    remove_tags: Option<String>,
+
     /// Output all event attributes and the full tags array.
     #[structopt(long)]
     all_tags: bool,
+
+    /// Bypass the --limit <= 100 guard.
+    #[structopt(long)]
+    force: bool,
 }
 
 /// Returns true if this tag key should be excluded by default.
@@ -86,7 +94,20 @@ fn extract_tag(tags: &[String], key: &str) -> Option<String> {
         .find_map(|tag| tag.strip_prefix(&prefix).map(|v| v.to_string()))
 }
 
+const LIMIT_GUARD: &str = "\
+Error: --limit is required and must be <= 100 (or use --force to bypass).
+
+You are fetching too much data. Consider a more targeted approach:
+  - Use a narrower --time-range (e.g. \"last 15 minutes\" instead of \"last 1 day\")
+  - Add filters to --query to reduce the result set
+  - Use --limit with a small value (e.g. 10-20) and inspect before fetching more
+  - Use --tags / --remove-tags to reduce output size per row";
+
 pub async fn run_events(api_key: &str, app_key: &str, opt: EventsOpt) -> anyhow::Result<()> {
+    if !opt.force && !opt.limit.is_some_and(|l| l <= 100) {
+        return Err(anyhow::anyhow!(LIMIT_GUARD));
+    }
+
     let sort = match opt.sort_by {
         SortOrder::Newest => EventsSort::TIMESTAMP_DESCENDING,
         SortOrder::Oldest => EventsSort::TIMESTAMP_ASCENDING,
@@ -105,6 +126,12 @@ pub async fn run_events(api_key: &str, app_key: &str, opt: EventsOpt) -> anyhow:
     // without --tags).
     let force_include: Vec<String> = opt
         .add_tags
+        .as_ref()
+        .map(|t| t.split(',').map(|s| s.trim().to_string()).collect())
+        .unwrap_or_default();
+
+    let remove: Vec<String> = opt
+        .remove_tags
         .as_ref()
         .map(|t| t.split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_default();
@@ -177,6 +204,9 @@ pub async fn run_events(api_key: &str, app_key: &str, opt: EventsOpt) -> anyhow:
                     if let Some(ref keys) = whitelist {
                         // Whitelist mode: only show specified tags.
                         for key in keys {
+                            if remove.iter().any(|r| r == key) {
+                                continue;
+                            }
                             let val = extract_tag(tags, key)
                                 .map(Value::String)
                                 .unwrap_or(Value::Null);
@@ -186,6 +216,9 @@ pub async fn run_events(api_key: &str, app_key: &str, opt: EventsOpt) -> anyhow:
                         // Exclusion mode: show all tags except infra noise.
                         for tag in tags {
                             let key = tag_key(tag);
+                            if remove.iter().any(|r| r == key) {
+                                continue;
+                            }
                             if is_infra_tag(key) && !force_include.iter().any(|f| f == key) {
                                 continue;
                             }

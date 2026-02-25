@@ -85,6 +85,10 @@ struct LogsOpt {
     /// Sort order for log entries: "newest" (default) or "oldest".
     #[structopt(long = "sort-by", default_value = "newest")]
     sort_by: SortOrder,
+
+    /// Bypass the --limit <= 100 guard.
+    #[structopt(long)]
+    force: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -171,7 +175,20 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+const LIMIT_GUARD: &str = "\
+Error: --limit is required and must be <= 100 (or use --force to bypass).
+
+You are fetching too much data. Consider a more targeted approach:
+  - Use a narrower --time-range (e.g. \"last 15 minutes\" instead of \"last 1 day\")
+  - Add filters to --query to reduce the result set
+  - Use --limit with a small value (e.g. 10-20) and inspect before fetching more
+  - Use --columns / --tags to reduce output size per row";
+
 async fn run_logs(dd_api_key: &str, dd_application_key: &str, opt: LogsOpt) -> anyhow::Result<()> {
+    if !opt.force && !opt.limit.is_some_and(|l| l <= 100) {
+        return Err(anyhow!(LIMIT_GUARD));
+    }
+
     let mut columns_str = opt.columns;
     if let Some(add) = opt.add_columns {
         columns_str = format!("{columns_str},{add}");
