@@ -68,15 +68,20 @@ fn is_short_link(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-struct ResolvedShortLink {
-    dashboard_url: String,
-    /// The og:image URL from the shared link page (the same image Slack unfurls).
-    og_image_url: Option<String>,
+enum ResolvedUrl {
+    Dashboard {
+        url: String,
+        og_image_url: Option<String>,
+    },
+    MetricExplorer {
+        url: String,
+        og_image_url: Option<String>,
+    },
 }
 
 /// Follow the /s/ short link redirect. Datadog renders these as a SPA, but the
 /// initial HTML contains a meta refresh or JS redirect with the real URL.
-async fn resolve_short_link(url: &str) -> anyhow::Result<ResolvedShortLink> {
+async fn resolve_short_link(url: &str) -> anyhow::Result<ResolvedUrl> {
     eprintln!("Resolving short link...");
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
@@ -88,12 +93,29 @@ async fn resolve_short_link(url: &str) -> anyhow::Result<ResolvedShortLink> {
 
     let og_image_url = extract_og_image(&body);
 
+    // Check for /metric/explorer first (redirect or HTML body).
+    if final_url.contains("/metric/explorer") {
+        let decoded = final_url.replace("&amp;", "&");
+        eprintln!("Resolved to: {}", decoded);
+        return Ok(ResolvedUrl::MetricExplorer {
+            url: decoded,
+            og_image_url,
+        });
+    }
+    if let Some(explorer_url) = extract_metric_explorer_url_from_html(&body) {
+        eprintln!("Resolved to: {}", explorer_url);
+        return Ok(ResolvedUrl::MetricExplorer {
+            url: explorer_url,
+            og_image_url,
+        });
+    }
+
     // If the redirect landed on a /dashboard/ URL, use it directly.
     if final_url.contains("/dashboard/") {
         let decoded = final_url.replace("&amp;", "&");
         eprintln!("Resolved to: {}", decoded);
-        return Ok(ResolvedShortLink {
-            dashboard_url: decoded,
+        return Ok(ResolvedUrl::Dashboard {
+            url: decoded,
             og_image_url,
         });
     }
@@ -101,14 +123,14 @@ async fn resolve_short_link(url: &str) -> anyhow::Result<ResolvedShortLink> {
     // Otherwise, Datadog renders a SPA — look for the dashboard URL in the HTML.
     if let Some(dashboard_url) = extract_dashboard_url_from_html(&body) {
         eprintln!("Resolved to: {}", dashboard_url);
-        return Ok(ResolvedShortLink {
-            dashboard_url,
+        return Ok(ResolvedUrl::Dashboard {
+            url: dashboard_url,
             og_image_url,
         });
     }
 
     Err(anyhow!(
-        "Could not resolve short link. The page loaded but no /dashboard/ URL was found.\n\
+        "Could not resolve short link. The page loaded but no dashboard or metric explorer URL was found.\n\
          Try opening {} in a browser and passing the resolved URL directly.",
         url
     ))
@@ -140,6 +162,80 @@ fn extract_dashboard_url_from_html(html: &str) -> Option<String> {
     let raw = &rest[..end];
     // Decode HTML entities (e.g. &amp; -> &).
     Some(raw.replace("&amp;", "&"))
+}
+
+/// Scan HTML body for a /metric/explorer URL and decode HTML entities.
+fn extract_metric_explorer_url_from_html(html: &str) -> Option<String> {
+    let pattern = "https://app.datadoghq.com/metric/explorer";
+    let start = html.find(pattern)?;
+    let rest = &html[start..];
+    let end = rest
+        .find(|c: char| c == '"' || c == '\'' || c == ' ' || c == '>' || c == '\\')
+        .unwrap_or(rest.len());
+    let raw = &rest[..end];
+    Some(raw.replace("&amp;", "&"))
+}
+
+fn is_metric_explorer_url(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .map(|u| u.path().starts_with("/metric/explorer"))
+        .unwrap_or(false)
+}
+
+/// Decode the lz-string-compressed widget definition from a metric explorer URL
+/// fragment. The fragment (after `#`) is an lz-string `compressToEncodedURIComponent`
+/// payload whose decoded JSON contains `{ "widget": { "definition": { ... } } }`.
+fn decode_metric_explorer_fragment(fragment: &str) -> anyhow::Result<serde_json::Value> {
+    let decompressed = lz_str::decompress_from_encoded_uri_component(fragment)
+        .ok_or_else(|| anyhow!("Failed to decompress lz-string fragment"))?;
+    let json_str = String::from_utf16(&decompressed)
+        .context("Decompressed data is not valid UTF-16")?;
+    let value: serde_json::Value =
+        serde_json::from_str(&json_str).context("Failed to parse decompressed JSON")?;
+    Ok(value)
+}
+
+/// Handle a metric explorer URL: decode the fragment and print the widget.
+fn handle_metric_explorer(url: &str, json_mode: bool) -> anyhow::Result<()> {
+    let parsed = url::Url::parse(url).context("Invalid URL")?;
+    let fragment = parsed
+        .fragment()
+        .ok_or_else(|| anyhow!("Metric explorer URL has no fragment (expected lz-string data after #)"))?;
+
+    let value = decode_metric_explorer_fragment(fragment)?;
+
+    // Print time range from query params if present.
+    let get_param = |name: &str| -> Option<i64> {
+        parsed
+            .query_pairs()
+            .find_map(|(k, v)| if k == name { v.parse().ok() } else { None })
+    };
+    if let (Some(from_ts), Some(to_ts)) = (get_param("start"), get_param("end")) {
+        let from = chrono::DateTime::from_timestamp_millis(from_ts);
+        let to = chrono::DateTime::from_timestamp_millis(to_ts);
+        if let (Some(f), Some(t)) = (from, to) {
+            eprintln!("Time range: {} to {}", f.format("%Y-%m-%d %H:%M UTC"), t.format("%Y-%m-%d %H:%M UTC"));
+        }
+    }
+
+    // The fragment JSON has shape: { "widget": { "definition": { ... } } }
+    // Wrap it to match the shape format_widget expects: { "definition": { ... } }
+    let widget = if value.get("widget").is_some() {
+        value["widget"].clone()
+    } else {
+        // Fallback: treat the whole value as the widget.
+        value.clone()
+    };
+
+    if json_mode {
+        println!("{}", serde_json::to_string_pretty(&widget)?);
+    } else {
+        eprintln!("Metric Explorer widget:");
+        print!("{}", format_widget(&widget));
+    }
+
+    Ok(())
 }
 
 /// Recursively search for a widget by ID within a widget tree (groups contain
@@ -303,39 +399,28 @@ pub async fn run_unfurl(
     app_key: &str,
     opt: UnfurlOpt,
 ) -> anyhow::Result<()> {
-    let (resolved_url, og_image_url) = if is_short_link(&opt.url) {
-        let resolved = resolve_short_link(&opt.url).await?;
-        (resolved.dashboard_url, resolved.og_image_url)
+    // Resolve short links and determine the URL type.
+    let resolved = if is_short_link(&opt.url) {
+        resolve_short_link(&opt.url).await?
+    } else if is_metric_explorer_url(&opt.url) {
+        ResolvedUrl::MetricExplorer {
+            url: opt.url,
+            og_image_url: None,
+        }
     } else {
-        (opt.url, None)
+        ResolvedUrl::Dashboard {
+            url: opt.url,
+            og_image_url: None,
+        }
     };
-    let parsed = parse_dashboard_url(&resolved_url)?;
-    let dashboard = api::get_dashboard(api_key, app_key, &parsed.dashboard_id).await?;
 
-    eprintln!(
-        "Dashboard: {} ({} widgets)",
-        dashboard.title,
-        dashboard.widgets.len()
-    );
+    match resolved {
+        ResolvedUrl::MetricExplorer { url, og_image_url } => {
+            handle_metric_explorer(&url, opt.json)?;
 
-    // Serialize to serde_json::Value so we can search by widget ID.
-    let widgets_value = serde_json::to_value(&dashboard.widgets)?;
-    let widgets_array = widgets_value
-        .as_array()
-        .ok_or_else(|| anyhow!("Expected widgets array"))?;
-
-    if let Some(target_id) = parsed.widget_id {
-        if let Some(widget) = find_widget_by_id(widgets_array, target_id) {
-            if opt.json {
-                println!("{}", serde_json::to_string_pretty(&widget)?);
-            } else {
-                print!("{}", format_widget(&widget));
-            }
-
-            // Download the og:image from the shared link (same image Slack shows).
             if let Some(image_url) = &og_image_url {
-                let path = format!("/tmp/dd-widget-{}.png", target_id);
-                match download_to_file(image_url, &path).await {
+                let path = "/tmp/dd-metric-explorer.png";
+                match download_to_file(image_url, path).await {
                     Ok(()) => {
                         eprintln!("Snapshot: {}", path);
                         eprintln!("(Tip: the snapshot may include cursor annotations — timestamp and count — not shown above)");
@@ -343,13 +428,52 @@ pub async fn run_unfurl(
                     Err(e) => eprintln!("Failed to download snapshot: {}", e),
                 }
             }
-        } else {
-            return Err(anyhow!("Widget {} not found in dashboard", target_id));
         }
-    } else if opt.json {
-        println!("{}", serde_json::to_string_pretty(&widgets_array)?);
-    } else {
-        print!("{}", format_widgets(widgets_array));
+        ResolvedUrl::Dashboard { url, og_image_url } => {
+            let parsed = parse_dashboard_url(&url)?;
+            let dashboard =
+                api::get_dashboard(api_key, app_key, &parsed.dashboard_id).await?;
+
+            eprintln!(
+                "Dashboard: {} ({} widgets)",
+                dashboard.title,
+                dashboard.widgets.len()
+            );
+
+            // Serialize to serde_json::Value so we can search by widget ID.
+            let widgets_value = serde_json::to_value(&dashboard.widgets)?;
+            let widgets_array = widgets_value
+                .as_array()
+                .ok_or_else(|| anyhow!("Expected widgets array"))?;
+
+            if let Some(target_id) = parsed.widget_id {
+                if let Some(widget) = find_widget_by_id(widgets_array, target_id) {
+                    if opt.json {
+                        println!("{}", serde_json::to_string_pretty(&widget)?);
+                    } else {
+                        print!("{}", format_widget(&widget));
+                    }
+
+                    // Download the og:image from the shared link (same image Slack shows).
+                    if let Some(image_url) = &og_image_url {
+                        let path = format!("/tmp/dd-widget-{}.png", target_id);
+                        match download_to_file(image_url, &path).await {
+                            Ok(()) => {
+                                eprintln!("Snapshot: {}", path);
+                                eprintln!("(Tip: the snapshot may include cursor annotations — timestamp and count — not shown above)");
+                            }
+                            Err(e) => eprintln!("Failed to download snapshot: {}", e),
+                        }
+                    }
+                } else {
+                    return Err(anyhow!("Widget {} not found in dashboard", target_id));
+                }
+            } else if opt.json {
+                println!("{}", serde_json::to_string_pretty(&widgets_array)?);
+            } else {
+                print!("{}", format_widgets(widgets_array));
+            }
+        }
     }
 
     Ok(())
@@ -460,5 +584,82 @@ mod tests {
         let parsed = parse_dashboard_url(url).unwrap();
         assert_eq!(parsed.from_ts, Some(1770759395143));
         assert_eq!(parsed.to_ts, Some(1771968995143));
+    }
+
+    #[test]
+    fn is_metric_explorer_url_detects_correctly() {
+        assert!(is_metric_explorer_url(
+            "https://app.datadoghq.com/metric/explorer?start=123&end=456#N4Ig..."
+        ));
+        assert!(!is_metric_explorer_url(
+            "https://app.datadoghq.com/dashboard/abc-def-123/title"
+        ));
+        assert!(!is_metric_explorer_url(
+            "https://app.datadoghq.com/s/e16e18c08/hkh-d76-9vd"
+        ));
+    }
+
+    #[test]
+    fn extract_metric_explorer_url_from_html_works() {
+        let html = r#"<script>window.location.href="https://app.datadoghq.com/metric/explorer?start=123&amp;end=456#N4Ig"</script>"#;
+        let url = extract_metric_explorer_url_from_html(html).unwrap();
+        assert_eq!(
+            url,
+            "https://app.datadoghq.com/metric/explorer?start=123&end=456#N4Ig"
+        );
+    }
+
+    #[test]
+    fn extract_metric_explorer_url_from_html_none() {
+        assert!(extract_metric_explorer_url_from_html("<html>nothing here</html>").is_none());
+    }
+
+    #[test]
+    fn decode_metric_explorer_fragment_roundtrip() {
+        // Build a minimal widget definition, compress it, and verify we can decode it.
+        let widget_json = r#"{"widget":{"definition":{"type":"timeseries","requests":[{"queries":[{"data_source":"metrics","name":"q1","query":"avg:system.cpu.user{*}"}],"formulas":[{"formula":"q1"}]}]}}}"#;
+        let compressed = lz_str::compress_to_encoded_uri_component(widget_json);
+        let decoded = decode_metric_explorer_fragment(&compressed).unwrap();
+        assert_eq!(
+            decoded["widget"]["definition"]["type"]
+                .as_str()
+                .unwrap(),
+            "timeseries"
+        );
+        assert_eq!(
+            decoded["widget"]["definition"]["requests"][0]["queries"][0]["query"]
+                .as_str()
+                .unwrap(),
+            "avg:system.cpu.user{*}"
+        );
+    }
+
+    #[test]
+    fn handle_metric_explorer_prints_widget() {
+        let widget_json = r#"{"widget":{"definition":{"type":"timeseries","title":"CPU Usage","requests":[{"queries":[{"data_source":"metrics","name":"q1","query":"avg:system.cpu.user{*}"}],"formulas":[{"formula":"q1"}]}]}}}"#;
+        let compressed = lz_str::compress_to_encoded_uri_component(widget_json);
+        let url = format!(
+            "https://app.datadoghq.com/metric/explorer?start=1000&end=2000#{}",
+            compressed
+        );
+        // Should not error.
+        handle_metric_explorer(&url, false).unwrap();
+    }
+
+    #[test]
+    fn handle_metric_explorer_json_mode() {
+        let widget_json = r#"{"widget":{"definition":{"type":"timeseries","title":"Test","requests":[]}}}"#;
+        let compressed = lz_str::compress_to_encoded_uri_component(widget_json);
+        let url = format!(
+            "https://app.datadoghq.com/metric/explorer#{}",
+            compressed
+        );
+        handle_metric_explorer(&url, true).unwrap();
+    }
+
+    #[test]
+    fn handle_metric_explorer_no_fragment_errors() {
+        let url = "https://app.datadoghq.com/metric/explorer?start=1000&end=2000";
+        assert!(handle_metric_explorer(url, false).is_err());
     }
 }
