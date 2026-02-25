@@ -1,4 +1,4 @@
-mod api;
+pub(crate) mod api;
 
 use crate::SortOrder;
 use datadog_api_client::datadogV2::api::api_events::ListEventsOptionalParams;

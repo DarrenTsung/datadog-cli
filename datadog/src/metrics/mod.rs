@@ -1,4 +1,4 @@
-mod api;
+pub(crate) mod api;
 
 use chrono::{Local, TimeZone, Utc};
 use datadog_api_client::datadogV1::model::MetricsQueryMetadata;
@@ -321,7 +321,7 @@ pub async fn run_metrics(
 // Point extraction & helpers
 // ---------------------------------------------------------------------------
 
-fn extract_points(series: &MetricsQueryMetadata) -> Vec<(f64, f64)> {
+pub(crate) fn extract_points(series: &MetricsQueryMetadata) -> Vec<(f64, f64)> {
     series
         .pointlist
         .as_ref()
@@ -346,7 +346,7 @@ fn series_label(series: &MetricsQueryMetadata) -> String {
         .unwrap_or_default()
 }
 
-fn global_y_range(all_points: &[Vec<(f64, f64)>]) -> (f64, f64) {
+pub(crate) fn global_y_range(all_points: &[Vec<(f64, f64)>]) -> (f64, f64) {
     let y_min = all_points
         .iter()
         .flat_map(|pts| pts.iter().map(|(_, v)| *v))
@@ -406,7 +406,7 @@ const CHART_HEIGHT: u32 = 40;
 
 /// Print a line chart to stdout using textplots, with a human-readable
 /// local-time X axis printed below.
-fn print_chart(points: &[(f64, f64)], from_ms: f64, to_ms: f64, y_min: f64, y_max: f64) {
+pub(crate) fn print_chart(points: &[(f64, f64)], from_ms: f64, to_ms: f64, y_min: f64, y_max: f64) {
     if points.is_empty() {
         return;
     }
@@ -488,7 +488,7 @@ fn print_chart(points: &[(f64, f64)], from_ms: f64, to_ms: f64, y_min: f64, y_ma
     println!("{}", rendered.trim_end());
 }
 
-fn print_series_summary(
+pub(crate) fn print_series_summary(
     series: &MetricsQueryMetadata,
     points: &[(f64, f64)],
     from_ms: f64,

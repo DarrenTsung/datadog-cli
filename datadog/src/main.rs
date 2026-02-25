@@ -1,6 +1,7 @@
 mod dashboard;
 mod events;
 mod metrics;
+mod monitors;
 mod notebooks;
 
 use anyhow::{anyhow, Context};
@@ -37,6 +38,8 @@ enum Command {
     Metrics(metrics::MetricsOpt),
     /// Search Datadog events.
     Events(events::EventsOpt),
+    /// Inspect Datadog monitors: metadata, underlying metrics, and events.
+    Monitors(monitors::MonitorsOpt),
     /// Unfurl a Datadog URL — show widget info and download the snapshot image.
     Unfurl(dashboard::UnfurlOpt),
 }
@@ -170,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Events(e_opt) => events::run_events(&opt.dd_api_key, &opt.dd_application_key, e_opt).await,
         Command::Logs(logs_opt) => run_logs(&opt.dd_api_key, &opt.dd_application_key, logs_opt).await,
         Command::Metrics(m_opt) => metrics::run_metrics(&opt.dd_api_key, &opt.dd_application_key, m_opt).await,
+        Command::Monitors(mon_opt) => monitors::run_monitors(&opt.dd_api_key, &opt.dd_application_key, mon_opt).await,
         Command::Notebooks(nb_opt) => notebooks::run_notebooks(&opt.dd_api_key, &opt.dd_application_key, nb_opt).await,
         Command::Unfurl(unfurl_opt) => dashboard::run_unfurl(&opt.dd_api_key, &opt.dd_application_key, unfurl_opt).await,
     }
