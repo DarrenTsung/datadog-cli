@@ -1,4 +1,5 @@
 mod dashboard;
+mod events;
 mod metrics;
 mod notebooks;
 
@@ -34,6 +35,8 @@ enum Command {
     Notebooks(notebooks::NotebooksOpt),
     /// Query Datadog metrics.
     Metrics(metrics::MetricsOpt),
+    /// Search Datadog events.
+    Events(events::EventsOpt),
     /// Unfurl a Datadog URL — show widget info and download the snapshot image.
     Unfurl(dashboard::UnfurlOpt),
 }
@@ -85,7 +88,7 @@ struct LogsOpt {
 }
 
 #[derive(Debug, Clone)]
-enum SortOrder {
+pub enum SortOrder {
     Newest,
     Oldest,
 }
@@ -160,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
     let opt = Opt::from_args();
 
     match opt.cmd {
+        Command::Events(e_opt) => events::run_events(&opt.dd_api_key, &opt.dd_application_key, e_opt).await,
         Command::Logs(logs_opt) => run_logs(&opt.dd_api_key, &opt.dd_application_key, logs_opt).await,
         Command::Metrics(m_opt) => metrics::run_metrics(&opt.dd_api_key, &opt.dd_application_key, m_opt).await,
         Command::Notebooks(nb_opt) => notebooks::run_notebooks(&opt.dd_api_key, &opt.dd_application_key, nb_opt).await,
