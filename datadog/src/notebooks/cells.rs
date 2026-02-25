@@ -2,10 +2,11 @@ use chrono::{DateTime, Utc};
 use datadog_api_client::datadogV1::model::{
     LogStreamWidgetDefinition, LogStreamWidgetDefinitionType, NotebookAbsoluteTime,
     NotebookCellCreateRequest, NotebookCellCreateRequestAttributes, NotebookCellResourceType,
-    NotebookCellTime, NotebookLogStreamCellAttributes, NotebookMarkdownCellAttributes,
-    NotebookMarkdownCellDefinition, NotebookMarkdownCellDefinitionType, NotebookRelativeTime,
-    NotebookTimeseriesCellAttributes, TimeseriesWidgetDefinition,
-    TimeseriesWidgetDefinitionType, TimeseriesWidgetRequest, WidgetLiveSpan,
+    NotebookCellResponseAttributes, NotebookCellTime, NotebookLogStreamCellAttributes,
+    NotebookMarkdownCellAttributes, NotebookMarkdownCellDefinition,
+    NotebookMarkdownCellDefinitionType, NotebookRelativeTime, NotebookTimeseriesCellAttributes,
+    TimeseriesWidgetDefinition, TimeseriesWidgetDefinitionType, TimeseriesWidgetRequest,
+    WidgetLiveSpan,
 };
 use serde_derive::Deserialize;
 
@@ -100,6 +101,79 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
 
 pub fn cells_to_create_requests(cells: &[Cell]) -> Vec<NotebookCellCreateRequest> {
     cells.iter().map(cell_to_create_request).collect()
+}
+
+/// Convert a `NotebookCellTime` back to a JSON-compatible string fragment for
+/// embedding inside a fenced code block.
+fn notebook_cell_time_to_json_value(time: &NotebookCellTime) -> serde_json::Value {
+    match time {
+        NotebookCellTime::NotebookRelativeTime(rt) => {
+            serde_json::Value::String(rt.live_span.to_string())
+        }
+        NotebookCellTime::NotebookAbsoluteTime(at) => {
+            serde_json::json!({
+                "start": at.start.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "end": at.end.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            })
+        }
+        NotebookCellTime::UnparsedObject(_) | _ => serde_json::Value::Null,
+    }
+}
+
+/// Convert a notebook cell response back to the markdown format the parser
+/// understands.
+pub fn notebook_cell_to_markdown(attrs: &NotebookCellResponseAttributes) -> String {
+    match attrs {
+        NotebookCellResponseAttributes::NotebookMarkdownCellAttributes(md) => {
+            md.definition.text.clone()
+        }
+        NotebookCellResponseAttributes::NotebookLogStreamCellAttributes(log) => {
+            let mut obj = serde_json::Map::new();
+            if let Some(q) = &log.definition.query {
+                obj.insert("query".into(), serde_json::Value::String(q.clone()));
+            }
+            if let Some(indexes) = &log.definition.indexes {
+                obj.insert("indexes".into(), serde_json::json!(indexes));
+            }
+            if let Some(columns) = &log.definition.columns {
+                obj.insert("columns".into(), serde_json::json!(columns));
+            }
+            if let Some(Some(time)) = &log.time {
+                obj.insert("time".into(), notebook_cell_time_to_json_value(time));
+            }
+            format!(
+                "```log-query\n{}\n```",
+                serde_json::to_string_pretty(&obj).unwrap()
+            )
+        }
+        NotebookCellResponseAttributes::NotebookTimeseriesCellAttributes(ts) => {
+            let mut obj = serde_json::Map::new();
+            if let Some(req) = ts.definition.requests.first() {
+                if let Some(q) = &req.q {
+                    obj.insert("query".into(), serde_json::Value::String(q.clone()));
+                }
+            }
+            if let Some(Some(time)) = &ts.time {
+                obj.insert("time".into(), notebook_cell_time_to_json_value(time));
+            }
+            format!(
+                "```metric-query\n{}\n```",
+                serde_json::to_string_pretty(&obj).unwrap()
+            )
+        }
+        NotebookCellResponseAttributes::NotebookToplistCellAttributes(_) => {
+            "<!-- Unsupported cell type: toplist -->".to_string()
+        }
+        NotebookCellResponseAttributes::NotebookHeatMapCellAttributes(_) => {
+            "<!-- Unsupported cell type: heatmap -->".to_string()
+        }
+        NotebookCellResponseAttributes::NotebookDistributionCellAttributes(_) => {
+            "<!-- Unsupported cell type: distribution -->".to_string()
+        }
+        NotebookCellResponseAttributes::UnparsedObject(_) | _ => {
+            "<!-- Unsupported cell type: unknown -->".to_string()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -315,5 +389,123 @@ mod tests {
             }
             _ => panic!("Expected NotebookLogStreamCellAttributes"),
         }
+    }
+
+    // --- reverse conversion tests ---
+
+    #[test]
+    fn reverse_markdown_cell() {
+        let attrs = NotebookCellResponseAttributes::NotebookMarkdownCellAttributes(Box::new(
+            NotebookMarkdownCellAttributes::new(NotebookMarkdownCellDefinition::new(
+                "# Hello\nWorld".to_string(),
+                NotebookMarkdownCellDefinitionType::MARKDOWN,
+            )),
+        ));
+        assert_eq!(notebook_cell_to_markdown(&attrs), "# Hello\nWorld");
+    }
+
+    #[test]
+    fn reverse_log_query_cell_basic() {
+        let mut def = LogStreamWidgetDefinition::new(LogStreamWidgetDefinitionType::LOG_STREAM);
+        def.query = Some("env:prod".to_string());
+        let attrs = NotebookCellResponseAttributes::NotebookLogStreamCellAttributes(Box::new(
+            NotebookLogStreamCellAttributes::new(def),
+        ));
+        let md = notebook_cell_to_markdown(&attrs);
+        assert!(md.starts_with("```log-query\n"));
+        assert!(md.ends_with("\n```"));
+        assert!(md.contains("\"query\": \"env:prod\""));
+    }
+
+    #[test]
+    fn reverse_log_query_cell_with_indexes_and_columns() {
+        let mut def = LogStreamWidgetDefinition::new(LogStreamWidgetDefinitionType::LOG_STREAM);
+        def.query = Some("env:prod".to_string());
+        def.indexes = Some(vec!["main".to_string()]);
+        def.columns = Some(vec!["@host".to_string()]);
+        let attrs = NotebookCellResponseAttributes::NotebookLogStreamCellAttributes(Box::new(
+            NotebookLogStreamCellAttributes::new(def),
+        ));
+        let md = notebook_cell_to_markdown(&attrs);
+        assert!(md.contains("\"indexes\""));
+        assert!(md.contains("\"columns\""));
+    }
+
+    #[test]
+    fn reverse_log_query_cell_with_relative_time() {
+        let mut def = LogStreamWidgetDefinition::new(LogStreamWidgetDefinitionType::LOG_STREAM);
+        def.query = Some("env:prod".to_string());
+        let mut cell_attrs = NotebookLogStreamCellAttributes::new(def);
+        cell_attrs.time = Some(Some(NotebookCellTime::NotebookRelativeTime(Box::new(
+            NotebookRelativeTime::new(WidgetLiveSpan::PAST_FOUR_HOURS),
+        ))));
+        let attrs = NotebookCellResponseAttributes::NotebookLogStreamCellAttributes(Box::new(
+            cell_attrs,
+        ));
+        let md = notebook_cell_to_markdown(&attrs);
+        assert!(md.contains("\"time\": \"4h\""));
+    }
+
+    #[test]
+    fn reverse_timeseries_cell() {
+        let request = TimeseriesWidgetRequest::new().q("avg:system.cpu.user{*}".to_string());
+        let def = TimeseriesWidgetDefinition::new(
+            vec![request],
+            TimeseriesWidgetDefinitionType::TIMESERIES,
+        );
+        let attrs = NotebookCellResponseAttributes::NotebookTimeseriesCellAttributes(Box::new(
+            NotebookTimeseriesCellAttributes::new(def),
+        ));
+        let md = notebook_cell_to_markdown(&attrs);
+        assert!(md.starts_with("```metric-query\n"));
+        assert!(md.ends_with("\n```"));
+        assert!(md.contains("avg:system.cpu.user{*}"));
+    }
+
+    #[test]
+    fn reverse_unsupported_types() {
+        use datadog_api_client::datadogV1::model::{
+            DistributionWidgetDefinition, DistributionWidgetDefinitionType,
+            DistributionWidgetRequest, HeatMapWidgetDefinition, HeatMapWidgetDefinitionType,
+            NotebookDistributionCellAttributes, NotebookHeatMapCellAttributes,
+            NotebookToplistCellAttributes, ToplistWidgetDefinition, ToplistWidgetDefinitionType,
+            ToplistWidgetRequest,
+        };
+
+        let toplist_def = ToplistWidgetDefinition::new(
+            vec![ToplistWidgetRequest::new()],
+            ToplistWidgetDefinitionType::TOPLIST,
+        );
+        let toplist = NotebookCellResponseAttributes::NotebookToplistCellAttributes(Box::new(
+            NotebookToplistCellAttributes::new(toplist_def),
+        ));
+        assert_eq!(
+            notebook_cell_to_markdown(&toplist),
+            "<!-- Unsupported cell type: toplist -->"
+        );
+
+        let heatmap_def = HeatMapWidgetDefinition::new(
+            vec![],
+            HeatMapWidgetDefinitionType::HEATMAP,
+        );
+        let heatmap = NotebookCellResponseAttributes::NotebookHeatMapCellAttributes(Box::new(
+            NotebookHeatMapCellAttributes::new(heatmap_def),
+        ));
+        assert_eq!(
+            notebook_cell_to_markdown(&heatmap),
+            "<!-- Unsupported cell type: heatmap -->"
+        );
+
+        let dist_def = DistributionWidgetDefinition::new(
+            vec![DistributionWidgetRequest::new()],
+            DistributionWidgetDefinitionType::DISTRIBUTION,
+        );
+        let dist = NotebookCellResponseAttributes::NotebookDistributionCellAttributes(Box::new(
+            NotebookDistributionCellAttributes::new(dist_def),
+        ));
+        assert_eq!(
+            notebook_cell_to_markdown(&dist),
+            "<!-- Unsupported cell type: distribution -->"
+        );
     }
 }
