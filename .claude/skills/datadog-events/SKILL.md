@@ -112,6 +112,7 @@ datadog events --time-range "last 1 day" --query "source:deploy" | jq '.title'
 - `"last 1 hour"`, `"last 4 hours"`, `"last 1h"`
 - `"last 1 day"`, `"last 7 days"`, `"last 1d"`
 - `"last 1 week"`, `"last 2 weeks"`, `"last 1w"`
+- Absolute ISO 8601 range: `"2026-02-19T17:35:00Z to 2026-02-19T23:00:00Z"`
 
 ## Examples
 
