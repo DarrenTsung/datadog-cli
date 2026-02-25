@@ -1,6 +1,6 @@
 ---
 name: datadog-notebooks
-description: Create or update Datadog notebooks from markdown files. Use when the user wants to write a notebook, convert markdown to a Datadog notebook, or manage notebooks via the CLI.
+description: Create, read, update, or manage Datadog notebooks. Use when the user wants to write a notebook, convert markdown to a Datadog notebook, read a notebook back as markdown, or when the user pastes a Datadog notebook URL (e.g. https://app.datadoghq.com/notebook/...).
 ---
 
 # Datadog Notebooks from Markdown
