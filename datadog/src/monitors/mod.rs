@@ -3,7 +3,7 @@ mod api;
 use crate::events;
 use crate::metrics;
 
-use chrono::{Local, TimeZone, Utc};
+use chrono::{Duration, Local, TimeZone, Utc};
 use datadog_api_client::datadogV1::model::{Monitor, MonitorType};
 use datadog_api_client::datadogV2::api::api_events::ListEventsOptionalParams;
 use datadog_api_client::datadogV2::model::EventsSort;
@@ -255,6 +255,14 @@ fn print_monitor_summary(monitor: &Monitor, raw: bool) {
     }
 }
 
+/// Extend a time range by `padding` on each side.
+fn widen_time_range(tr: &TimeRange, padding: Duration) -> TimeRange {
+    TimeRange {
+        from: tr.from - padding,
+        to: tr.to + padding,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
@@ -318,7 +326,10 @@ async fn run_monitors_inspect(
             println!("---");
             println!();
         }
-        fetch_and_print_trigger_event(api_key, app_key, eid, &time_range, raw).await?;
+        // Use a wide search window for the trigger event — the URL's time
+        // range is for the metric chart, not the event itself.
+        let event_range = widen_time_range(&time_range, chrono::Duration::hours(24));
+        fetch_and_print_trigger_event(api_key, app_key, eid, &event_range, raw).await?;
     }
 
     // 7. If metric/query alert type, extract and query the underlying metric.
