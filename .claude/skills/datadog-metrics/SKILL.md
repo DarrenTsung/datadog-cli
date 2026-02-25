@@ -42,13 +42,41 @@ datadog metrics query --query "avg:system.cpu.user{*}" --time "last 1 hour" --ra
 datadog metrics query --query "avg:system.cpu.user{*}" --time "from_ts=1771886671256&to_ts=1771973071256"
 ```
 
+### Rollup into fixed buckets
+
+```bash
+# Hourly buckets over the last day
+datadog metrics query --query "avg:system.cpu.user{env:production}" --time "last 1 day" --rollup hourly
+
+# Custom 5-minute buckets
+datadog metrics query --query "avg:system.cpu.user{env:production}" --time "last 4 hours" --rollup 5m
+```
+
+### Compare before/after a pivot timestamp
+
+```bash
+datadog metrics query --query "avg:system.cpu.user{env:production}" \
+  --time "2026-02-19T14:00:00Z to 2026-02-20T02:00:00Z" \
+  --compare "2026-02-19T17:35:00Z"
+```
+
+### Combined rollup + compare
+
+```bash
+datadog metrics query --query "avg:system.cpu.user{env:production}" \
+  --time "2026-02-19T14:00:00Z to 2026-02-20T02:00:00Z" \
+  --rollup hourly --compare "2026-02-19T17:35:00Z"
+```
+
 ## Flags
 
-| Flag      | Required | Description                                                       |
-|-----------|----------|-------------------------------------------------------------------|
-| `--query` | Yes      | Datadog metric query string (e.g. `"avg:system.cpu.user{*}"`)     |
-| `--time`  | Yes      | Time range — `"last 1 hour"`, `"last 4 hours"`, or `from_ts=...&to_ts=...` from a Datadog URL |
-| `--raw`   | No       | Output raw `(timestamp, value)` JSON lines instead of summary     |
+| Flag        | Required | Description                                                       |
+|-------------|----------|-------------------------------------------------------------------|
+| `--query`   | Yes      | Datadog metric query string (e.g. `"avg:system.cpu.user{*}"`)     |
+| `--time`    | Yes      | Time range — `"last 1 hour"`, `"last 4 hours"`, or `from_ts=...&to_ts=...` from a Datadog URL |
+| `--raw`     | No       | Output raw `(timestamp, value)` JSON lines instead of summary     |
+| `--rollup`  | No       | Roll up data points into fixed-size buckets. Accepts `"hourly"`, `"daily"`, or a duration like `"5m"`, `"4h"`, `"2d"` |
+| `--compare` | No       | Compare before/after a pivot timestamp. Accepts ISO 8601 (e.g. `"2026-02-19T17:35:00Z"`) or epoch seconds |
 
 ## Default output (summary)
 
@@ -60,6 +88,33 @@ For each series, prints:
 
 When a query returns multiple series (e.g. `by {host}`), all charts share the same Y axis for easy comparison, and each series is plotted at its correct position within the full time range.
 
+## Rollup output (`--rollup`)
+
+Aggregates data points into fixed-size time buckets and prints a table:
+
+```
+Bucket                |       Avg |       Min |       Max |     n
+----------------------+-----------+-----------+-----------+------
+Mon 14:00 - 15:00     |    9012.3 |    8500.1 |    9800.8 |    30
+Mon 15:00 - 16:00     |    8750.5 |    8100.0 |    9400.2 |    30
+```
+
+## Compare output (`--compare`)
+
+Splits data points into before/after windows around a pivot timestamp:
+
+```
+            |       Avg |       Min |       Max |     n
+------------+-----------+-----------+-----------+------
+Before      |    9012.3 |    7879.0 |   10001.0 |   107
+After       |    8493.7 |    6479.0 |   13175.0 |   253
+Delta       |    -518.6 |           |           |
+```
+
+## Combined rollup + compare
+
+Same rollup table with a `=== PIVOT ===` separator line between the before and after windows.
+
 ## Raw output (`--raw`)
 
 Each data point as a JSON line:
@@ -67,6 +122,21 @@ Each data point as a JSON line:
 ```json
 {"series":"env:production,host:web-01","timestamp":"2026-02-24T12:00:00+00:00","value":12.3}
 ```
+
+With `--raw --rollup`, outputs bucketed aggregates:
+
+```json
+{"series":"env:production","bucket_start":"2026-02-19T14:00:00+00:00","bucket_end":"2026-02-19T15:00:00+00:00","avg":9012.3,"min":8500.1,"max":9800.8,"count":30}
+```
+
+With `--raw --compare`, outputs before/after stats:
+
+```json
+{"series":"env:production","period":"before","avg":9012.3,"min":7879.0,"max":10001.0,"count":107}
+{"series":"env:production","period":"after","avg":8493.7,"min":6479.0,"max":13175.0,"count":253}
+```
+
+With `--raw --rollup --compare`, bucketed aggregates include a `period` field (`"before"`, `"after"`, or `"pivot"`).
 
 ## Time range formats
 
@@ -97,4 +167,21 @@ datadog metrics query --query "sum:multiplayer.users.current{env:production} by 
 
 # Raw data points for piping to other tools
 datadog metrics query --query "avg:system.memory.used{*}" --time "last 4 hours" --raw | jq '.value'
+
+# Hourly rollup over the last day
+datadog metrics query --query "avg:system.cpu.user{env:production}" --time "last 1 day" --rollup hourly
+
+# Compare before/after a deploy
+datadog metrics query --query "avg:system.cpu.user{env:production}" \
+  --time "2026-02-19T14:00:00Z to 2026-02-20T02:00:00Z" \
+  --compare "2026-02-19T17:35:00Z"
+
+# Hourly rollup with pivot separator at deploy time
+datadog metrics query --query "avg:system.cpu.user{env:production}" \
+  --time "2026-02-19T14:00:00Z to 2026-02-20T02:00:00Z" \
+  --rollup hourly --compare "2026-02-19T17:35:00Z"
+
+# Raw bucketed JSON for scripting
+datadog metrics query --query "avg:system.cpu.user{env:production}" \
+  --time "last 1 day" --rollup daily --raw
 ```
