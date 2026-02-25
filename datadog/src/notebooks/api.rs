@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context};
-use datadog_api_client::datadog::{APIKey, Configuration};
+use datadog_api_client::datadog::{self, APIKey, Configuration};
 use datadog_api_client::datadogV1::api::api_notebooks::{
     ListNotebooksOptionalParams, NotebooksAPI,
 };
@@ -72,9 +72,12 @@ pub async fn create_notebook(
         NotebookResourceType::NOTEBOOKS,
     ));
 
-    api.create_notebook(body)
-        .await
-        .context("Failed to create notebook")
+    api.create_notebook(body).await.map_err(|e| match &e {
+        datadog::Error::ResponseError(resp) => {
+            anyhow!("Failed to create notebook ({}): {}", resp.status, resp.content)
+        }
+        _ => anyhow!(e).context("Failed to create notebook"),
+    })
 }
 
 pub async fn update_notebook(
@@ -102,9 +105,12 @@ pub async fn update_notebook(
         NotebookResourceType::NOTEBOOKS,
     ));
 
-    api.update_notebook(notebook_id, body)
-        .await
-        .context("Failed to update notebook")
+    api.update_notebook(notebook_id, body).await.map_err(|e| match &e {
+        datadog::Error::ResponseError(resp) => {
+            anyhow!("Failed to update notebook ({}): {}", resp.status, resp.content)
+        }
+        _ => anyhow!(e).context("Failed to update notebook"),
+    })
 }
 
 pub async fn list_notebooks(
