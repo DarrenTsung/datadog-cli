@@ -122,8 +122,18 @@ impl FromStr for TimeRange {
             ));
         }
 
+        // Try ISO 8601 absolute range: "2026-02-19T17:35:00Z to 2026-02-19T23:00:00Z"
+        if let Some((from_str, to_str)) = s.split_once(" to ") {
+            if let (Ok(from_dt), Ok(to_dt)) = (
+                DateTime::parse_from_rfc3339(from_str.trim()),
+                DateTime::parse_from_rfc3339(to_str.trim()),
+            ) {
+                return Ok(Self::new(from_dt.with_timezone(&Utc), to_dt.with_timezone(&Utc)));
+            }
+        }
+
         Err(anyhow!(
-            "Failed to parse '{}' as a time range! Examples: 'last 4 hours', or a Datadog URL.",
+            "Failed to parse '{}' as a time range! Examples: 'last 4 hours', a Datadog URL, or 'ISO8601 to ISO8601'.",
             s
         ))
     }
@@ -278,6 +288,35 @@ mod tests {
             range.from + Duration::minutes(10),
             range.to - Duration::minutes(10),
         )));
+    }
+
+    #[test]
+    fn works_for_iso8601_absolute_range() {
+        assert_eq!(
+            TimeRange::from_str("2026-02-19T17:35:00Z to 2026-02-19T23:00:00Z").unwrap(),
+            TimeRange {
+                from: Utc.with_ymd_and_hms(2026, 2, 19, 17, 35, 0).unwrap(),
+                to: Utc.with_ymd_and_hms(2026, 2, 19, 23, 0, 0).unwrap(),
+            }
+        );
+    }
+
+    #[test]
+    fn works_for_iso8601_with_offset() {
+        assert_eq!(
+            TimeRange::from_str("2026-02-19T17:35:00+00:00 to 2026-02-19T23:00:00+00:00").unwrap(),
+            TimeRange {
+                from: Utc.with_ymd_and_hms(2026, 2, 19, 17, 35, 0).unwrap(),
+                to: Utc.with_ymd_and_hms(2026, 2, 19, 23, 0, 0).unwrap(),
+            }
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Can't create TimeRange")]
+    fn iso8601_reversed_range_panics() {
+        let _ =
+            TimeRange::from_str("2026-02-19T23:00:00Z to 2026-02-19T17:35:00Z").unwrap();
     }
 
     #[test]

@@ -115,7 +115,16 @@ datadog logs --time-range "last 1 hour" --query "status:error" | jq '.message'
 - `"last 1 hour"`, `"last 4 hours"`, `"last 1h"`
 - `"last 1 day"`, `"last 7 days"`, `"last 1d"`
 - `"last 1 week"`, `"last 2 weeks"`, `"last 1w"`
+- Absolute ISO 8601 range: `"2026-02-19T17:35:00Z to 2026-02-19T23:00:00Z"`
 - Datadog URLs with `from_ts` / `to_ts` query params (epoch milliseconds)
+
+## Query syntax tips
+
+The CLI validates query syntax before calling the API. Common pitfall:
+
+- **Facet values containing colons must be quoted.** For example, `@job_name:figma::highprifilethumbnailjob` will be rejected — use `@job_name:"figma::highprifilethumbnailjob"` instead.
+
+If validation fails, the CLI prints actionable tips and exits without making an API call.
 
 ## Examples
 
