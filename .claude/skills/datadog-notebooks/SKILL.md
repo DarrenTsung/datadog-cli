@@ -116,6 +116,10 @@ datadog notebooks create --file notebook.md --title "Investigation" --time 4h
 # List all notebooks
 datadog notebooks list
 
+# Read a notebook back as markdown (by ID or URL)
+datadog notebooks read --id 12345
+datadog notebooks read --id https://app.datadoghq.com/notebook/12345/some-title
+
 # Update an existing notebook (preserves title if --title omitted)
 datadog notebooks update --id 12345 --file notebook.md
 
