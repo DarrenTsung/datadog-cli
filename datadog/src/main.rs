@@ -239,6 +239,16 @@ async fn run_logs(dd_api_key: &str, dd_application_key: &str, opt: LogsOpt) -> a
         (time_range, query)
     };
 
+    // Validate the query syntax before making the API call.
+    let tips = datadog_utils::validate_query(&query);
+    if !tips.is_empty() {
+        let mut msg = String::from("Query validation error — tips for fixing:\n");
+        for tip in &tips {
+            msg.push_str(&format!("  - {}\n", tip));
+        }
+        return Err(anyhow!(msg));
+    }
+
     let mut request = SearchLogRequest {
         filter: Filter {
             from: time_range.from.to_rfc3339(),
