@@ -237,6 +237,26 @@ datadog metrics query \
   --time "last 4 hours"
 ```
 
+### Batch across tag values with `by {tag}` (AVOID per-value loops)
+
+When you need the same metric or formula for multiple tag values (e.g. multiple job names, hosts, services), ALWAYS use `by {tag}` grouping instead of issuing separate queries per tag value. This works with `--formula`, `--compare`, and `--rollup` — all compose together.
+
+```bash
+# GOOD: one query returns all job types at once
+datadog metrics query \
+  --query "a=count:sinatra.async_worker.jobs.full_latency_distrib{service:high-memory-worker, env:production} by {job_name}.as_count()" \
+  --query "b=avg:sinatra.async_worker.jobs.execution_time_distrib{service:high-memory-worker, env:production} by {job_name}" \
+  --formula "a * b" \
+  --time "2026-02-17T08:00:00Z to 2026-02-26T08:00:00Z" \
+  --rollup daily --compare "2026-02-22T00:00:00Z"
+
+# BAD: querying each job_name separately — DO NOT DO THIS
+datadog metrics query --query "a=count:metric{job_name:job1} ..." --formula "a * b" --time "..."
+datadog metrics query --query "a=count:metric{job_name:job2} ..." --formula "a * b" --time "..."
+datadog metrics query --query "a=count:metric{job_name:job3} ..." --formula "a * b" --time "..."
+# ... repeating N times = N unnecessary API calls
+```
+
 ### Discovering tag values before querying
 
 Use `tag-values` to find valid tag values instead of guessing. This avoids wasted queries from incorrect tag names.
