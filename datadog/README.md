@@ -1,4 +1,4 @@
-# datadog-logs
+# datadog-cli
 A tool for exporting raw logs from Datadog's log API. This is very similar to `datadog_export`, however this tool uses Datadog's log API (https://docs.datadoghq.com/logs/guide/collect-multiple-logs-with-pagination/?tab=v2api) and the `datadog_export` scans over the archives in S3.
 
 Datadog's log API is much faster than scanning through the archives because it uses indices when searching. However, we are rate limited to a max of ~~300~~ 1080 requests per hour (1,000 logs per request).
@@ -9,10 +9,10 @@ Actually, if you want to export logs outside of the main index, it should be pos
 
 ## Installation
 ```
-cargo install --path datadog-logs
+cargo install --path datadog-cli
 ```
 
-This installs the `datadog-logs` binary to `~/.cargo/bin`.
+This installs the `datadog-cli` binary to `~/.cargo/bin`.
 
 ## Usage
 Here's a basic example of how to use this tool:
@@ -33,11 +33,11 @@ The tool outputs all matching logs to stdout, if you want to write to a file red
 Please use the --help flag to view all options and arguments:
 ```
 ❯ cargo run -- --help
-datadog-logs 0.1.0
+datadog-cli 0.1.0
 A tool for collecting logs from the Datadog log API.
 
 USAGE:
-    datadog-logs [OPTIONS] --dd-api-key <dd-api-key> --dd-application-key <dd-application-key> --query <query> --time-range <time-range>
+    datadog-cli [OPTIONS] --dd-api-key <dd-api-key> --dd-application-key <dd-application-key> --query <query> --time-range <time-range>
 
 FLAGS:
     -h, --help       Prints help information
