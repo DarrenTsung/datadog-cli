@@ -2,11 +2,11 @@ use chrono::{DateTime, Utc};
 use datadog_api_client::datadogV1::model::{
     LogStreamWidgetDefinition, LogStreamWidgetDefinitionType, NotebookAbsoluteTime,
     NotebookCellCreateRequest, NotebookCellCreateRequestAttributes, NotebookCellResourceType,
-    NotebookCellResponseAttributes, NotebookCellTime, NotebookLogStreamCellAttributes,
-    NotebookMarkdownCellAttributes, NotebookMarkdownCellDefinition,
-    NotebookMarkdownCellDefinitionType, NotebookRelativeTime, NotebookTimeseriesCellAttributes,
-    TimeseriesWidgetDefinition, TimeseriesWidgetDefinitionType, TimeseriesWidgetRequest,
-    WidgetLiveSpan,
+    NotebookCellResponseAttributes, NotebookCellTime, NotebookCellUpdateRequestAttributes,
+    NotebookLogStreamCellAttributes, NotebookMarkdownCellAttributes,
+    NotebookMarkdownCellDefinition, NotebookMarkdownCellDefinitionType, NotebookRelativeTime,
+    NotebookTimeseriesCellAttributes, TimeseriesWidgetDefinition, TimeseriesWidgetDefinitionType,
+    TimeseriesWidgetRequest, WidgetLiveSpan,
 };
 use serde_derive::Deserialize;
 
@@ -101,6 +101,43 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
 
 pub fn cells_to_create_requests(cells: &[Cell]) -> Vec<NotebookCellCreateRequest> {
     cells.iter().map(cell_to_create_request).collect()
+}
+
+/// Convert create-request attributes to update-request attributes.
+/// The types are structurally identical but live in separate enums.
+pub fn create_attrs_to_update_attrs(
+    attrs: NotebookCellCreateRequestAttributes,
+) -> NotebookCellUpdateRequestAttributes {
+    match attrs {
+        NotebookCellCreateRequestAttributes::NotebookMarkdownCellAttributes(a) => {
+            NotebookCellUpdateRequestAttributes::NotebookMarkdownCellAttributes(a)
+        }
+        NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(a) => {
+            NotebookCellUpdateRequestAttributes::NotebookTimeseriesCellAttributes(a)
+        }
+        NotebookCellCreateRequestAttributes::NotebookLogStreamCellAttributes(a) => {
+            NotebookCellUpdateRequestAttributes::NotebookLogStreamCellAttributes(a)
+        }
+        NotebookCellCreateRequestAttributes::NotebookToplistCellAttributes(a) => {
+            NotebookCellUpdateRequestAttributes::NotebookToplistCellAttributes(a)
+        }
+        NotebookCellCreateRequestAttributes::NotebookHeatMapCellAttributes(a) => {
+            NotebookCellUpdateRequestAttributes::NotebookHeatMapCellAttributes(a)
+        }
+        NotebookCellCreateRequestAttributes::NotebookDistributionCellAttributes(a) => {
+            NotebookCellUpdateRequestAttributes::NotebookDistributionCellAttributes(a)
+        }
+        NotebookCellCreateRequestAttributes::UnparsedObject(u) => {
+            NotebookCellUpdateRequestAttributes::UnparsedObject(u)
+        }
+        // Catch-all for future variants.
+        _ => NotebookCellUpdateRequestAttributes::NotebookMarkdownCellAttributes(Box::new(
+            NotebookMarkdownCellAttributes::new(NotebookMarkdownCellDefinition::new(
+                "<!-- unsupported cell type -->".to_string(),
+                NotebookMarkdownCellDefinitionType::MARKDOWN,
+            )),
+        )),
+    }
 }
 
 /// Convert a `NotebookCellTime` back to a JSON-compatible string fragment for

@@ -4,10 +4,11 @@ use datadog_api_client::datadogV1::api::api_notebooks::{
     ListNotebooksOptionalParams, NotebooksAPI,
 };
 use datadog_api_client::datadogV1::model::{
-    NotebookCellCreateRequest, NotebookCreateData, NotebookCreateDataAttributes,
-    NotebookCreateRequest, NotebookGlobalTime, NotebookRelativeTime, NotebookResourceType,
-    NotebookResponse, NotebookUpdateCell, NotebookUpdateData, NotebookUpdateDataAttributes,
-    NotebookUpdateRequest, NotebooksResponse, WidgetLiveSpan,
+    NotebookCellCreateRequest, NotebookCellResourceType, NotebookCellUpdateRequest,
+    NotebookCreateData, NotebookCreateDataAttributes, NotebookCreateRequest, NotebookGlobalTime,
+    NotebookRelativeTime, NotebookResourceType, NotebookResponse, NotebookUpdateCell,
+    NotebookUpdateData, NotebookUpdateDataAttributes, NotebookUpdateRequest, NotebooksResponse,
+    WidgetLiveSpan,
 };
 
 use super::cells;
@@ -91,9 +92,39 @@ pub async fn update_notebook(
     let config = make_configuration(api_key, app_key);
     let api = NotebooksAPI::with_config(config);
 
-    let cell_requests: Vec<NotebookUpdateCell> = cells::cells_to_create_requests(parsed_cells)
+    // Fetch existing notebook to get cell IDs — the update API treats cells
+    // without IDs as new additions rather than replacements.
+    let existing = api
+        .get_notebook(notebook_id)
+        .await
+        .context("Failed to fetch existing notebook for update")?;
+    let existing_ids: Vec<String> = existing
+        .data
+        .map(|d| d.attributes.cells.iter().map(|c| c.id.clone()).collect())
+        .unwrap_or_default();
+
+    let new_cells: Vec<NotebookCellCreateRequest> =
+        cells::cells_to_create_requests(parsed_cells);
+
+    let cell_requests: Vec<NotebookUpdateCell> = new_cells
         .into_iter()
-        .map(|c| NotebookUpdateCell::NotebookCellCreateRequest(Box::new(c)))
+        .enumerate()
+        .map(|(i, create_req)| {
+            if let Some(cell_id) = existing_ids.get(i) {
+                // Reuse the existing cell ID so the API replaces it.
+                let update_attrs = cells::create_attrs_to_update_attrs(create_req.attributes);
+                NotebookUpdateCell::NotebookCellUpdateRequest(Box::new(
+                    NotebookCellUpdateRequest::new(
+                        update_attrs,
+                        cell_id.clone(),
+                        NotebookCellResourceType::NOTEBOOK_CELLS,
+                    ),
+                ))
+            } else {
+                // More cells than before — create new ones.
+                NotebookUpdateCell::NotebookCellCreateRequest(Box::new(create_req))
+            }
+        })
         .collect();
 
     let body = NotebookUpdateRequest::new(NotebookUpdateData::new(
