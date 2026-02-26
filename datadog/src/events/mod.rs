@@ -183,8 +183,46 @@ fn check_deploysv2_tags(opt: &EventsOpt) -> Option<String> {
     None
 }
 
+const STATSIG_RESOURCE_NOTE: &str = "\
+Statsig events cover multiple resource types. Without a type filter, the query \
+is too broad and likely returns a mix of unrelated changes. Add one of these to \
+the --query:\n\
+\n\
+  gate:<name>         Feature gates (e.g. gate:my_feature or gate:*)\n\
+  experiment:<name>   A/B experiments\n\
+  config:<name>       Dynamic configs\n\
+  layer:<name>        Layers (experiment containers)\n\
+\n\
+Use --force to bypass this check.";
+
+/// For `source:statsig` queries, require a resource type filter so the
+/// caller doesn't accidentally fetch a grab-bag of unrelated event types.
+fn check_statsig_resource_key(opt: &EventsOpt) -> Option<String> {
+    if opt.force {
+        return None;
+    }
+    let q = opt.query.as_deref().unwrap_or("");
+    if !q.contains("source:statsig") {
+        return None;
+    }
+
+    const RESOURCE_KEYS: &[&str] = &["gate:", "experiment:", "config:", "layer:"];
+    if RESOURCE_KEYS.iter().any(|k| q.contains(k)) {
+        return None;
+    }
+
+    Some(format!(
+        "source:statsig query is missing a resource type filter.\n\n{}",
+        STATSIG_RESOURCE_NOTE,
+    ))
+}
+
 pub async fn run_events(api_key: &str, app_key: &str, opt: EventsOpt) -> anyhow::Result<()> {
     if let Some(msg) = check_deploysv2_tags(&opt) {
+        return Err(anyhow::anyhow!(msg));
+    }
+
+    if let Some(msg) = check_statsig_resource_key(&opt) {
         return Err(anyhow::anyhow!(msg));
     }
 
@@ -405,5 +443,71 @@ mod tests {
     fn non_deploysv2_allows_env_tag() {
         let opt = make_opt(Some("source:deploy"), Some("env,version"), None, None);
         assert!(check_deploysv2_tags(&opt).is_none());
+    }
+
+    // -- source:statsig resource key validation --
+
+    #[test]
+    fn statsig_rejects_missing_resource_key() {
+        let opt = make_opt(Some("source:statsig"), None, None, None);
+        let result = check_statsig_resource_key(&opt);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("resource type filter"));
+    }
+
+    #[test]
+    fn statsig_rejects_env_only_filter() {
+        // env_production is not a resource type key.
+        let opt = make_opt(Some("source:statsig env_production"), None, None, None);
+        assert!(check_statsig_resource_key(&opt).is_some());
+    }
+
+    #[test]
+    fn statsig_rejects_review_status_only() {
+        let opt = make_opt(Some("source:statsig review_status:committed"), None, None, None);
+        assert!(check_statsig_resource_key(&opt).is_some());
+    }
+
+    #[test]
+    fn statsig_passes_with_gate() {
+        let opt = make_opt(Some("source:statsig gate:my_feature"), None, None, None);
+        assert!(check_statsig_resource_key(&opt).is_none());
+    }
+
+    #[test]
+    fn statsig_passes_with_gate_wildcard() {
+        let opt = make_opt(Some("source:statsig gate:*"), None, None, None);
+        assert!(check_statsig_resource_key(&opt).is_none());
+    }
+
+    #[test]
+    fn statsig_passes_with_experiment() {
+        let opt = make_opt(Some("source:statsig experiment:my_exp"), None, None, None);
+        assert!(check_statsig_resource_key(&opt).is_none());
+    }
+
+    #[test]
+    fn statsig_passes_with_config() {
+        let opt = make_opt(Some("source:statsig config:my_config"), None, None, None);
+        assert!(check_statsig_resource_key(&opt).is_none());
+    }
+
+    #[test]
+    fn statsig_passes_with_layer() {
+        let opt = make_opt(Some("source:statsig layer:my_layer"), None, None, None);
+        assert!(check_statsig_resource_key(&opt).is_none());
+    }
+
+    #[test]
+    fn statsig_passes_with_force() {
+        let mut opt = make_opt(Some("source:statsig"), None, None, None);
+        opt.force = true;
+        assert!(check_statsig_resource_key(&opt).is_none());
+    }
+
+    #[test]
+    fn non_statsig_skips_resource_check() {
+        let opt = make_opt(Some("source:deploy"), None, None, None);
+        assert!(check_statsig_resource_key(&opt).is_none());
     }
 }
