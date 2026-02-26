@@ -114,6 +114,13 @@ datadog events --time-range "last 1 day" --query "source:deploy" | jq '.title'
 - `"last 1 week"`, `"last 2 weeks"`, `"last 1w"`
 - Absolute ISO 8601 range: `"2026-02-19T17:35:00Z to 2026-02-19T23:00:00Z"`
 
+## Tag gotchas for `service:deploysv2`
+
+When querying deploy events with `service:deploysv2`, the `env` and `version` tags are **rejected** if explicitly requested via `--tags` or `--add-tags`:
+
+- `env` is a Datadog reserved tag for the deploysv2 service environment, not the deploy target
+- `version` is the deploysv2 service version, not the source commit — use `commit_hash` instead for the actual source SHA (for `git log`, etc.)
+
 ## Examples
 
 ```bash

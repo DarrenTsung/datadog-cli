@@ -103,7 +103,91 @@ You are fetching too much data. Consider a more targeted approach:
   - Use --limit with a small value (e.g. 10-20) and inspect before fetching more
   - Use --tags / --remove-tags to reduce output size per row";
 
+const DEPLOYSV2_TAG_NOTE: &str = "\
+`env` is a Datadog reserved tag for the deploysv2 service environment, not the deploy \
+target. `version` is the deploysv2 service version, not the source commit — it's easy \
+to confuse with `commit_hash`, which is the actual source SHA to use for `git log`.";
+
+/// For `service:deploysv2` queries, `env` and `version` are misleading.
+/// The user must ensure they won't appear in output — either by using a
+/// `--tags` whitelist that excludes them, or by adding `--remove-tags`.
+fn check_deploysv2_tags(opt: &EventsOpt) -> Option<String> {
+    let q = opt.query.as_deref().unwrap_or("");
+    if !q.contains("service:deploysv2") {
+        return None;
+    }
+
+    const MISLEADING: &[&str] = &["env", "version"];
+
+    let removed: Vec<&str> = opt
+        .remove_tags
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim())
+        .collect();
+
+    // If there's an explicit --tags whitelist, only the listed tags appear.
+    if let Some(ref tags_str) = opt.tags {
+        let whitelist: Vec<&str> = tags_str.split(',').map(|s| s.trim()).collect();
+        let present: Vec<&&str> = MISLEADING
+            .iter()
+            .filter(|t| whitelist.contains(t) && !removed.contains(t))
+            .collect();
+        if !present.is_empty() {
+            return Some(format!(
+                "Rejected tags for service:deploysv2 query: {}\n\n\
+                 Remove them from --tags, or add --remove-tags {}.\n\n{}",
+                present.iter().map(|t| format!("`{}`", t)).collect::<Vec<_>>().join(", "),
+                present.iter().copied().copied().collect::<Vec<_>>().join(","),
+                DEPLOYSV2_TAG_NOTE,
+            ));
+        }
+    }
+
+    // Also check --add-tags.
+    if let Some(ref add_str) = opt.add_tags {
+        let added: Vec<&str> = add_str.split(',').map(|s| s.trim()).collect();
+        let present: Vec<&&str> = MISLEADING
+            .iter()
+            .filter(|t| added.contains(t) && !removed.contains(t))
+            .collect();
+        if !present.is_empty() {
+            return Some(format!(
+                "Rejected tags for service:deploysv2 query: {}\n\n\
+                 Remove them from --add-tags, or add --remove-tags {}.\n\n{}",
+                present.iter().map(|t| format!("`{}`", t)).collect::<Vec<_>>().join(", "),
+                present.iter().copied().copied().collect::<Vec<_>>().join(","),
+                DEPLOYSV2_TAG_NOTE,
+            ));
+        }
+    }
+
+    // Default output (no --tags whitelist): env and version would appear
+    // unless explicitly removed.
+    if opt.tags.is_none() {
+        let leaking: Vec<&&str> = MISLEADING
+            .iter()
+            .filter(|t| !removed.contains(t))
+            .collect();
+        if !leaking.is_empty() {
+            return Some(format!(
+                "service:deploysv2 queries require --remove-tags {} \
+                 (or use --tags to whitelist only the tags you need).\n\n{}",
+                leaking.iter().copied().copied().collect::<Vec<_>>().join(","),
+                DEPLOYSV2_TAG_NOTE,
+            ));
+        }
+    }
+
+    None
+}
+
 pub async fn run_events(api_key: &str, app_key: &str, opt: EventsOpt) -> anyhow::Result<()> {
+    if let Some(msg) = check_deploysv2_tags(&opt) {
+        return Err(anyhow::anyhow!(msg));
+    }
+
     if !opt.force && !opt.limit.is_some_and(|l| l <= 100) {
         return Err(anyhow::anyhow!(LIMIT_GUARD));
     }
@@ -253,4 +337,73 @@ pub async fn run_events(api_key: &str, app_key: &str, opt: EventsOpt) -> anyhow:
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn make_opt(
+        query: Option<&str>,
+        tags: Option<&str>,
+        add_tags: Option<&str>,
+        remove_tags: Option<&str>,
+    ) -> EventsOpt {
+        EventsOpt {
+            time_range: TimeRange::from_str("last 1 hour").unwrap(),
+            query: query.map(|s| s.to_string()),
+            sort_by: SortOrder::Newest,
+            limit: Some(10),
+            cursor: None,
+            tags: tags.map(|s| s.to_string()),
+            add_tags: add_tags.map(|s| s.to_string()),
+            remove_tags: remove_tags.map(|s| s.to_string()),
+            all_tags: false,
+            force: false,
+        }
+    }
+
+    #[test]
+    fn deploysv2_rejects_env_in_whitelist() {
+        let opt = make_opt(Some("service:deploysv2"), Some("env,commit_hash"), None, None);
+        let result = check_deploysv2_tags(&opt);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("env"));
+    }
+
+    #[test]
+    fn deploysv2_rejects_version_in_add_tags() {
+        let opt = make_opt(Some("service:deploysv2"), None, Some("version"), None);
+        let result = check_deploysv2_tags(&opt);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("version"));
+    }
+
+    #[test]
+    fn deploysv2_rejects_default_output_without_remove() {
+        // No --tags whitelist, no --remove-tags → env/version would leak.
+        let opt = make_opt(Some("service:deploysv2"), None, None, None);
+        let result = check_deploysv2_tags(&opt);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("--remove-tags"));
+    }
+
+    #[test]
+    fn deploysv2_passes_with_remove_tags() {
+        let opt = make_opt(Some("service:deploysv2"), None, None, Some("env,version"));
+        assert!(check_deploysv2_tags(&opt).is_none());
+    }
+
+    #[test]
+    fn deploysv2_passes_with_safe_whitelist() {
+        let opt = make_opt(Some("service:deploysv2"), Some("commit_hash,service"), None, None);
+        assert!(check_deploysv2_tags(&opt).is_none());
+    }
+
+    #[test]
+    fn non_deploysv2_allows_env_tag() {
+        let opt = make_opt(Some("source:deploy"), Some("env,version"), None, None);
+        assert!(check_deploysv2_tags(&opt).is_none());
+    }
 }
