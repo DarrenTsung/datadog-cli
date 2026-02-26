@@ -90,26 +90,38 @@ pub async fn update_notebook(
 ) -> anyhow::Result<NotebookResponse> {
     let config = make_configuration(api_key, app_key);
     let api = NotebooksAPI::with_config(config);
+    let time = make_global_time(live_span);
 
+    // Step 1: Clear all existing cells by replacing with a single placeholder.
+    // This avoids cell-ID duplication bugs where the API merges old and new
+    // cells in unexpected ways.
+    let placeholder = cells::cells_to_create_requests(&[Cell::Markdown(String::new())]);
+    let clear_cells: Vec<NotebookUpdateCell> = placeholder
+        .into_iter()
+        .map(|c| NotebookUpdateCell::NotebookCellCreateRequest(Box::new(c)))
+        .collect();
+    let clear_body = NotebookUpdateRequest::new(NotebookUpdateData::new(
+        NotebookUpdateDataAttributes::new(clear_cells, title.to_string(), time.clone()),
+        NotebookResourceType::NOTEBOOKS,
+    ));
+    api.update_notebook(notebook_id, clear_body)
+        .await
+        .map_err(|e| match &e {
+            datadog::Error::ResponseError(resp) => {
+                anyhow!("Failed to clear notebook ({}): {}", resp.status, resp.content)
+            }
+            _ => anyhow!(e).context("Failed to clear notebook"),
+        })?;
+
+    // Step 2: Insert the actual new cells.
     let new_cells: Vec<NotebookCellCreateRequest> =
         cells::cells_to_create_requests(parsed_cells);
-
-    // Send all cells as CreateRequests. The update API replaces the entire
-    // cell list — existing cells not referenced by ID are deleted. Using
-    // CreateRequests exclusively avoids ID-duplication bugs that occur when
-    // position-based ID reuse maps a markdown cell to a timeseries cell ID
-    // (the API duplicates the timeseries cell instead of overwriting it).
     let cell_requests: Vec<NotebookUpdateCell> = new_cells
         .into_iter()
         .map(|c| NotebookUpdateCell::NotebookCellCreateRequest(Box::new(c)))
         .collect();
-
     let body = NotebookUpdateRequest::new(NotebookUpdateData::new(
-        NotebookUpdateDataAttributes::new(
-            cell_requests,
-            title.to_string(),
-            make_global_time(live_span),
-        ),
+        NotebookUpdateDataAttributes::new(cell_requests, title.to_string(), time),
         NotebookResourceType::NOTEBOOKS,
     ));
 
