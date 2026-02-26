@@ -4,6 +4,7 @@ pub mod parser;
 
 use anyhow::{anyhow, Context};
 use chrono::{Datelike, NaiveDate, Utc, Weekday};
+use std::time::Instant;
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
@@ -369,6 +370,8 @@ pub async fn run_notebooks(
             title,
             time,
         } => {
+            let t0 = Instant::now();
+
             let live_span = api::parse_live_span(&time)?;
             let content = std::fs::read_to_string(&file)
                 .with_context(|| format!("Failed to read file: {file}"))?;
@@ -377,6 +380,7 @@ pub async fn run_notebooks(
             if cells.is_empty() {
                 return Err(anyhow!("No cells parsed from {file}"));
             }
+            eprintln!("[{:.2}s] parsed {} cells", t0.elapsed().as_secs_f64(), cells.len());
 
             let title = match title {
                 Some(t) => t,
@@ -387,7 +391,9 @@ pub async fn run_notebooks(
             };
             // If we couldn't find a local title, fetch from the existing notebook.
             let title = if title.is_empty() {
+                let t1 = Instant::now();
                 let existing = api::get_notebook(api_key, app_key, id).await?;
+                eprintln!("[{:.2}s] fetched existing title", t1.elapsed().as_secs_f64());
                 existing
                     .data
                     .map(|d| d.attributes.name)
@@ -397,11 +403,15 @@ pub async fn run_notebooks(
                 title
             };
 
+            let t2 = Instant::now();
             let response =
                 api::update_notebook(api_key, app_key, id, &title, &cells, live_span).await?;
+            eprintln!("[{:.2}s] update API call", t2.elapsed().as_secs_f64());
+
             if let Some(data) = response.data {
                 println!("Updated notebook: https://app.datadoghq.com/notebook/{}", data.id);
             }
+            eprintln!("[{:.2}s] total", t0.elapsed().as_secs_f64());
         }
         NotebooksCommand::Delete { id } => {
             api::delete_notebook(api_key, app_key, id).await?;
