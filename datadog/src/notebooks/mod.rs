@@ -16,7 +16,15 @@ pub struct NotebooksOpt {
 #[derive(StructOpt, Debug)]
 pub enum NotebooksCommand {
     /// List all notebooks.
-    List,
+    List {
+        /// Max notebooks to return.
+        #[structopt(long)]
+        limit: Option<usize>,
+
+        /// Bypass the --limit <= 100 guard.
+        #[structopt(long)]
+        force: bool,
+    },
 
     /// Create a notebook from a markdown file.
     Create {
@@ -335,10 +343,16 @@ pub async fn run_notebooks(
     opt: NotebooksOpt,
 ) -> anyhow::Result<()> {
     match opt.cmd {
-        NotebooksCommand::List => {
+        NotebooksCommand::List { limit, force } => {
+            if !force && !limit.is_some_and(|l| l <= 100) {
+                return Err(anyhow!(
+                    "Error: --limit is required and must be <= 100 (or use --force to bypass)."
+                ));
+            }
             let response = api::list_notebooks(api_key, app_key).await?;
             if let Some(data) = response.data {
-                for nb in &data {
+                let cap = limit.unwrap_or(data.len());
+                for nb in data.iter().take(cap) {
                     println!("{}\t{}", nb.id, nb.attributes.name);
                 }
                 if data.is_empty() {

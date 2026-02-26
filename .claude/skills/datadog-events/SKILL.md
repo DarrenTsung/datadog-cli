@@ -86,11 +86,14 @@ datadog events --time-range "last 1 day" --cursor "eyJhZnRlciI6..."
 | `--time-range`    | Yes                               | Time range string, e.g. `"last 1 day"`, `"last 30 minutes"`                    |
 | `--query`         | No                                | Event search query (e.g. `"source:deploy"`)                                     |
 | `--sort-by`       | No                                | Sort order: `newest` (default) or `oldest`                                      |
-| `--limit`         | No                                | Maximum number of events to output                                              |
+| `--limit`         | Yes*                              | Maximum number of events to output (must be <= 100, or use `--force`)           |
+| `--force`         | No                                | Bypass the `--limit <= 100` guard                                               |
 | `--cursor`        | No                                | Pagination cursor to resume a previous search                                   |
 | `--tags`          | No                                | Whitelist specific tags (omit to auto-show all non-infra tags)                  |
 | `--add-tags`      | No                                | Force-include additional tags (even excluded infra tags)                         |
 | `--all-tags`      | No                                | Output all event attributes and the full tags array                             |
+
+*`--limit` must be <= 100 unless `--force` is used.
 
 ## Output format
 
@@ -112,6 +115,8 @@ datadog events --time-range "last 1 day" --query "source:deploy" | jq '.title'
 - `"last 1 hour"`, `"last 4 hours"`, `"last 1h"`
 - `"last 1 day"`, `"last 7 days"`, `"last 1d"`
 - `"last 1 week"`, `"last 2 weeks"`, `"last 1w"`
+- `"last 1 month"`, `"last 6 months"`
+- `"last 1 year"`, `"last 1y"`
 - Absolute ISO 8601 range: `"2026-02-19T17:35:00Z to 2026-02-19T23:00:00Z"`
 
 ## Tag gotchas for `service:deploysv2`

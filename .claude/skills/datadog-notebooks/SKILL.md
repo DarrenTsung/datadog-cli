@@ -128,8 +128,9 @@ datadog notebooks create --file notebook.md --title "Error Investigation"
 # Create with custom time span
 datadog notebooks create --file notebook.md --title "Investigation" --time 4h
 
-# List all notebooks
-datadog notebooks list
+# List notebooks (limit required, or use --force)
+datadog notebooks list --limit 20
+datadog notebooks list --force
 
 # Read a notebook back as markdown (by ID or URL)
 datadog notebooks read --id 12345

@@ -79,13 +79,14 @@ datadog logs --time-range "last 1 day" --query "service:web" \
 | `--time-range`    | No*                               | Time range string, e.g. `"last 5 days"`, `"last 30 minutes"`              |
 | `--query`         | No*                               | Datadog log query string                                                   |
 | `--cursor`        | No                                | Pagination cursor to resume a previous search                              |
-| `--limit`         | No                                | Maximum number of log rows to output                                       |
+| `--limit`         | Yes*                              | Maximum number of log rows to output (must be <= 100, or use `--force`)    |
+| `--force`         | No                                | Bypass the `--limit <= 100` guard                                          |
 | `--columns`       | No                                | Comma-separated columns to include (default: `timestamp,service,message`)  |
 | `--add-columns`   | No                                | Comma-separated columns to append to `--columns`                           |
 | `--all-columns`   | No                                | Output all attributes for each log entry instead of selected columns       |
 | `--sort-by`       | No                                | Sort order: `newest` (default) or `oldest`                                 |
 
-*Either `--datadog-url` or both `--time-range` and `--query` must be provided.
+*Either `--datadog-url` or both `--time-range` and `--query` must be provided. `--limit` must be <= 100 unless `--force` is used.
 
 ## Column syntax
 
@@ -115,6 +116,8 @@ datadog logs --time-range "last 1 hour" --query "status:error" | jq '.message'
 - `"last 1 hour"`, `"last 4 hours"`, `"last 1h"`
 - `"last 1 day"`, `"last 7 days"`, `"last 1d"`
 - `"last 1 week"`, `"last 2 weeks"`, `"last 1w"`
+- `"last 1 month"`, `"last 6 months"`
+- `"last 1 year"`, `"last 1y"`
 - Absolute ISO 8601 range: `"2026-02-19T17:35:00Z to 2026-02-19T23:00:00Z"`
 - Datadog URLs with `from_ts` / `to_ts` query params (epoch milliseconds)
 
