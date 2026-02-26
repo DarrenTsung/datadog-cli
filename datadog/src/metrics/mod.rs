@@ -24,8 +24,15 @@ pub enum MetricsCommand {
     /// Query metrics and display a summary or raw data points.
     Query {
         /// Datadog metric query string (e.g. "avg:system.cpu.user{env:production}").
+        /// Repeatable with name= prefix for formula queries (e.g. --query "a=count:metric{*}").
         #[structopt(long)]
-        query: String,
+        query: Vec<String>,
+
+        /// Combine named queries with arithmetic (e.g. --formula "a * b").
+        /// Requires all --query values to have a name= prefix.
+        /// Uses the V2 timeseries formula API.
+        #[structopt(long)]
+        formula: Option<Vec<String>>,
 
         /// Time range (e.g. "last 1 hour", "last 4 hours").
         #[structopt(long)]
@@ -97,6 +104,66 @@ impl FromStr for RollupInterval {
         };
         Ok(RollupInterval::new(num * multiplier))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Named query parsing (for formula mode)
+// ---------------------------------------------------------------------------
+
+pub(crate) struct NamedQuery {
+    pub name: String,
+    pub query: String,
+}
+
+fn parse_named_query(s: &str) -> Result<NamedQuery, String> {
+    let eq_pos = s
+        .find('=')
+        .ok_or_else(|| format!("query missing name= prefix: {}", s))?;
+    let name = &s[..eq_pos];
+    let query = &s[eq_pos + 1..];
+    if name.is_empty() {
+        return Err(format!("empty query name in: {}", s));
+    }
+    if query.is_empty() {
+        return Err(format!("empty query after name= in: {}", s));
+    }
+    Ok(NamedQuery {
+        name: name.to_string(),
+        query: query.to_string(),
+    })
+}
+
+/// Returns true if the query string looks like it has a `name=` prefix
+/// (i.e. the part before the first `=` is a short alphanumeric identifier,
+/// not a metric aggregation like "avg:").
+fn has_name_prefix(s: &str) -> bool {
+    match s.find('=') {
+        Some(pos) => {
+            let prefix = &s[..pos];
+            !prefix.is_empty()
+                && prefix.len() <= 10
+                && prefix.chars().all(|c| c.is_alphanumeric() || c == '_')
+        }
+        None => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Formula series info (for V2 output)
+// ---------------------------------------------------------------------------
+
+struct FormulaSeriesInfo {
+    label: String,
+    group_tags: Vec<String>,
+    num_points: usize,
+}
+
+fn print_formula_series_header(info: &FormulaSeriesInfo) {
+    println!("## {}", info.label);
+    if !info.group_tags.is_empty() {
+        println!("Tags: {}", info.group_tags.join(", "));
+    }
+    println!("Points: {}", info.num_points);
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +275,7 @@ pub async fn run_metrics(
     match opt.cmd {
         MetricsCommand::Query {
             query,
+            formula,
             time,
             raw,
             rollup,
@@ -221,93 +289,271 @@ pub async fn run_metrics(
                 None => None,
             };
 
-            // V1 query API takes epoch seconds, not milliseconds.
-            let from_s = time.from.timestamp();
-            let to_s = time.to.timestamp();
+            let use_formula = formula.is_some();
 
-            let response = api::query_metrics(api_key, app_key, from_s, to_s, &query).await?;
+            if use_formula {
+                // V2 formula path.
+                let formulas = formula.unwrap();
+                if formulas.is_empty() {
+                    anyhow::bail!("--formula requires at least one formula expression");
+                }
+                if query.is_empty() {
+                    anyhow::bail!("--formula requires at least one --query with a name= prefix");
+                }
+                let named_queries: Vec<NamedQuery> = query
+                    .iter()
+                    .map(|q| {
+                        parse_named_query(q).map_err(|e| anyhow::anyhow!("{}", e))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
 
-            let series = response.series.unwrap_or_default();
-            if series.is_empty() {
-                eprintln!("No series returned for query: {}", query);
-                return Ok(());
-            }
+                // V2 API uses milliseconds.
+                let from_ms = time.from.timestamp_millis();
+                let to_ms = time.to.timestamp_millis();
+                let interval_ms = rollup.map(|r| r.seconds as i64 * 1000);
 
-            // Pointlist timestamps are in milliseconds.
-            let from_ms = from_s as f64 * 1000.0;
-            let to_ms = to_s as f64 * 1000.0;
+                let response = api::query_timeseries_formula(
+                    api_key,
+                    app_key,
+                    from_ms,
+                    to_ms,
+                    &named_queries,
+                    &formulas,
+                    interval_ms,
+                )
+                .await?;
 
-            let all_points: Vec<Vec<(f64, f64)>> =
-                series.iter().map(|s| extract_points(s)).collect();
+                let data = response
+                    .data
+                    .ok_or_else(|| anyhow::anyhow!("No data in formula response"))?;
+                let attrs = data
+                    .attributes
+                    .ok_or_else(|| anyhow::anyhow!("No attributes in formula response"))?;
 
-            match (raw, rollup, pivot_ms) {
-                // Existing: summary + chart
-                (false, None, None) => {
-                    let (global_y_min, global_y_max) = global_y_range(&all_points);
-                    for (i, (s, pts)) in series.iter().zip(&all_points).enumerate() {
-                        if i > 0 {
-                            println!();
+                let times = attrs.times.unwrap_or_default();
+                let all_values = attrs.values.unwrap_or_default();
+                let series_meta = attrs.series.unwrap_or_default();
+
+                if all_values.is_empty() {
+                    eprintln!("No series returned for formula query");
+                    return Ok(());
+                }
+
+                let from_ms_f = from_ms as f64;
+                let to_ms_f = to_ms as f64;
+
+                // Build (points, info) for each result series.
+                let results: Vec<(Vec<(f64, f64)>, FormulaSeriesInfo)> = all_values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, vals)| {
+                        let pts = extract_formula_points(&times, vals);
+                        let meta = series_meta.get(i);
+                        let group_tags = meta
+                            .and_then(|m| m.group_tags.clone())
+                            .unwrap_or_default();
+                        let query_index = meta.and_then(|m| m.query_index).unwrap_or(0) as usize;
+                        // Use formula expression if available, else the query name.
+                        let label = if query_index < formulas.len() {
+                            formulas[query_index].clone()
+                        } else if query_index < named_queries.len() {
+                            named_queries[query_index].name.clone()
+                        } else {
+                            format!("series_{}", i)
+                        };
+                        let info = FormulaSeriesInfo {
+                            label,
+                            group_tags,
+                            num_points: pts.len(),
+                        };
+                        (pts, info)
+                    })
+                    .collect();
+
+                let all_points: Vec<&Vec<(f64, f64)>> =
+                    results.iter().map(|(pts, _)| pts).collect();
+
+                match (raw, rollup, pivot_ms) {
+                    (false, None, None) => {
+                        let all_pts_owned: Vec<Vec<(f64, f64)>> =
+                            all_points.iter().map(|p| (*p).clone()).collect();
+                        let (global_y_min, global_y_max) = global_y_range(&all_pts_owned);
+                        for (i, (pts, info)) in results.iter().enumerate() {
+                            if i > 0 {
+                                println!();
+                            }
+                            print_formula_series_header(info);
+                            if pts.is_empty() {
+                                println!("(no data points)");
+                            } else {
+                                let values: Vec<f64> = pts.iter().map(|(_, v)| *v).collect();
+                                let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
+                                let max =
+                                    values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                                let avg = values.iter().sum::<f64>() / values.len() as f64;
+                                let last = *values.last().unwrap();
+                                println!(
+                                    "Min: {:.1}  Max: {:.1}  Avg: {:.1}  Last: {:.1}",
+                                    min, max, avg, last,
+                                );
+                                print_chart(pts, from_ms_f, to_ms_f, global_y_min, global_y_max);
+                            }
                         }
-                        print_series_summary(s, pts, from_ms, to_ms, global_y_min, global_y_max);
                     }
-                }
-                // Existing: raw JSON lines
-                (true, None, None) => {
-                    print_raw_points(&series);
-                }
-                // Rollup table
-                (false, Some(interval), None) => {
-                    for (i, (s, pts)) in series.iter().zip(&all_points).enumerate() {
-                        if i > 0 {
-                            println!();
+                    (true, None, None) => {
+                        for (pts, info) in &results {
+                            print_raw_formula_points(pts, &info.label, &info.group_tags);
                         }
-                        print_series_header(s, pts);
-                        let buckets = bucket_points(pts, from_ms, interval.seconds);
-                        print_rollup_table(&buckets, None);
                     }
-                }
-                // Compare table
-                (false, None, Some(pivot)) => {
-                    for (i, (s, pts)) in series.iter().zip(&all_points).enumerate() {
-                        if i > 0 {
-                            println!();
+                    (false, Some(interval), None) => {
+                        for (i, (pts, info)) in results.iter().enumerate() {
+                            if i > 0 {
+                                println!();
+                            }
+                            print_formula_series_header(info);
+                            let buckets = bucket_points(pts, from_ms_f, interval.seconds);
+                            print_rollup_table(&buckets, None);
                         }
-                        print_series_header(s, pts);
-                        print_compare_table(pts, pivot);
                     }
-                }
-                // Rollup + compare
-                (false, Some(interval), Some(pivot)) => {
-                    for (i, (s, pts)) in series.iter().zip(&all_points).enumerate() {
-                        if i > 0 {
-                            println!();
+                    (false, None, Some(pivot)) => {
+                        for (i, (pts, info)) in results.iter().enumerate() {
+                            if i > 0 {
+                                println!();
+                            }
+                            print_formula_series_header(info);
+                            print_compare_table(pts, pivot);
                         }
-                        print_series_header(s, pts);
-                        let buckets = bucket_points(pts, from_ms, interval.seconds);
-                        print_rollup_table(&buckets, Some(pivot));
+                    }
+                    (false, Some(interval), Some(pivot)) => {
+                        for (i, (pts, info)) in results.iter().enumerate() {
+                            if i > 0 {
+                                println!();
+                            }
+                            print_formula_series_header(info);
+                            let buckets = bucket_points(pts, from_ms_f, interval.seconds);
+                            print_rollup_table(&buckets, Some(pivot));
+                        }
+                    }
+                    (true, Some(interval), None) => {
+                        for (pts, info) in &results {
+                            let buckets = bucket_points(pts, from_ms_f, interval.seconds);
+                            print_raw_rollup(&buckets, &info.label, None);
+                        }
+                    }
+                    (true, None, Some(pivot)) => {
+                        for (pts, info) in &results {
+                            print_raw_compare(pts, pivot, &info.label);
+                        }
+                    }
+                    (true, Some(interval), Some(pivot)) => {
+                        for (pts, info) in &results {
+                            let buckets = bucket_points(pts, from_ms_f, interval.seconds);
+                            print_raw_rollup(&buckets, &info.label, Some(pivot));
+                        }
                     }
                 }
-                // Raw + rollup
-                (true, Some(interval), None) => {
-                    for (s, pts) in series.iter().zip(&all_points) {
-                        let series_label = series_label(s);
-                        let buckets = bucket_points(pts, from_ms, interval.seconds);
-                        print_raw_rollup(&buckets, &series_label, None);
-                    }
+            } else {
+                // V1 single-query path.
+                if query.is_empty() {
+                    anyhow::bail!("--query is required");
                 }
-                // Raw + compare
-                (true, None, Some(pivot)) => {
-                    for (s, pts) in series.iter().zip(&all_points) {
-                        let series_label = series_label(s);
-                        print_raw_compare(pts, pivot, &series_label);
-                    }
+                if query.len() > 1 {
+                    anyhow::bail!(
+                        "multiple --query values require --formula; \
+                         for a single query, omit the name= prefix"
+                    );
                 }
-                // Raw + rollup + compare
-                (true, Some(interval), Some(pivot)) => {
-                    for (s, pts) in series.iter().zip(&all_points) {
-                        let series_label = series_label(s);
-                        let buckets = bucket_points(pts, from_ms, interval.seconds);
-                        print_raw_rollup(&buckets, &series_label, Some(pivot));
+                let single_query = &query[0];
+                if has_name_prefix(single_query) {
+                    anyhow::bail!(
+                        "query has a name= prefix but --formula was not provided; \
+                         either add --formula or remove the prefix"
+                    );
+                }
+
+                // V1 query API takes epoch seconds, not milliseconds.
+                let from_s = time.from.timestamp();
+                let to_s = time.to.timestamp();
+
+                let response =
+                    api::query_metrics(api_key, app_key, from_s, to_s, single_query).await?;
+
+                let series = response.series.unwrap_or_default();
+                if series.is_empty() {
+                    eprintln!("No series returned for query: {}", single_query);
+                    return Ok(());
+                }
+
+                // Pointlist timestamps are in milliseconds.
+                let from_ms = from_s as f64 * 1000.0;
+                let to_ms = to_s as f64 * 1000.0;
+
+                let all_points: Vec<Vec<(f64, f64)>> =
+                    series.iter().map(|s| extract_points(s)).collect();
+
+                match (raw, rollup, pivot_ms) {
+                    (false, None, None) => {
+                        let (global_y_min, global_y_max) = global_y_range(&all_points);
+                        for (i, (s, pts)) in series.iter().zip(&all_points).enumerate() {
+                            if i > 0 {
+                                println!();
+                            }
+                            print_series_summary(
+                                s, pts, from_ms, to_ms, global_y_min, global_y_max,
+                            );
+                        }
+                    }
+                    (true, None, None) => {
+                        print_raw_points(&series);
+                    }
+                    (false, Some(interval), None) => {
+                        for (i, (s, pts)) in series.iter().zip(&all_points).enumerate() {
+                            if i > 0 {
+                                println!();
+                            }
+                            print_series_header(s, pts);
+                            let buckets = bucket_points(pts, from_ms, interval.seconds);
+                            print_rollup_table(&buckets, None);
+                        }
+                    }
+                    (false, None, Some(pivot)) => {
+                        for (i, (s, pts)) in series.iter().zip(&all_points).enumerate() {
+                            if i > 0 {
+                                println!();
+                            }
+                            print_series_header(s, pts);
+                            print_compare_table(pts, pivot);
+                        }
+                    }
+                    (false, Some(interval), Some(pivot)) => {
+                        for (i, (s, pts)) in series.iter().zip(&all_points).enumerate() {
+                            if i > 0 {
+                                println!();
+                            }
+                            print_series_header(s, pts);
+                            let buckets = bucket_points(pts, from_ms, interval.seconds);
+                            print_rollup_table(&buckets, Some(pivot));
+                        }
+                    }
+                    (true, Some(interval), None) => {
+                        for (s, pts) in series.iter().zip(&all_points) {
+                            let series_label = series_label(s);
+                            let buckets = bucket_points(pts, from_ms, interval.seconds);
+                            print_raw_rollup(&buckets, &series_label, None);
+                        }
+                    }
+                    (true, None, Some(pivot)) => {
+                        for (s, pts) in series.iter().zip(&all_points) {
+                            let series_label = series_label(s);
+                            print_raw_compare(pts, pivot, &series_label);
+                        }
+                    }
+                    (true, Some(interval), Some(pivot)) => {
+                        for (s, pts) in series.iter().zip(&all_points) {
+                            let series_label = series_label(s);
+                            let buckets = bucket_points(pts, from_ms, interval.seconds);
+                            print_raw_rollup(&buckets, &series_label, Some(pivot));
+                        }
                     }
                 }
             }
@@ -335,6 +581,14 @@ pub(crate) fn extract_points(series: &MetricsQueryMetadata) -> Vec<(f64, f64)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn extract_formula_points(times: &[i64], values: &[Option<f64>]) -> Vec<(f64, f64)> {
+    times
+        .iter()
+        .zip(values)
+        .filter_map(|(t, v)| v.map(|val| (*t as f64, val)))
+        .collect()
 }
 
 fn series_label(series: &MetricsQueryMetadata) -> String {
@@ -684,6 +938,23 @@ fn print_raw_points(series_list: &[MetricsQueryMetadata]) {
     }
 }
 
+fn print_raw_formula_points(points: &[(f64, f64)], label: &str, group_tags: &[String]) {
+    let series_name = if group_tags.is_empty() {
+        label.to_string()
+    } else {
+        format!("{}{{{}}}", label, group_tags.join(","))
+    };
+    for &(ts_ms, value) in points {
+        let dt = Utc.timestamp_millis_opt(ts_ms as i64).unwrap();
+        let point = RawPoint {
+            series: series_name.clone(),
+            timestamp: dt.to_rfc3339(),
+            value,
+        };
+        println!("{}", serde_json::to_string(&point).unwrap());
+    }
+}
+
 fn print_raw_rollup(buckets: &[Bucket], series_label: &str, pivot_ms: Option<f64>) {
     for bucket in buckets {
         if let Some(stats) = bucket.stats() {
@@ -931,5 +1202,72 @@ mod tests {
         ];
         print_compare_table(&points, 1_700_003_600_000.0);
         print_compare_table(&[], 1_700_003_600_000.0);
+    }
+
+    // -- parse_named_query --
+
+    #[test]
+    fn parse_named_query_valid() {
+        let nq = parse_named_query("a=count:metric{env:prod}.as_count()").unwrap();
+        assert_eq!(nq.name, "a");
+        assert_eq!(nq.query, "count:metric{env:prod}.as_count()");
+    }
+
+    #[test]
+    fn parse_named_query_multi_equals() {
+        // Only splits on the first '='.
+        let nq = parse_named_query("b=avg:metric{tag=value}").unwrap();
+        assert_eq!(nq.name, "b");
+        assert_eq!(nq.query, "avg:metric{tag=value}");
+    }
+
+    #[test]
+    fn parse_named_query_missing_prefix() {
+        assert!(parse_named_query("count:metric{*}").is_err());
+    }
+
+    #[test]
+    fn parse_named_query_empty_name() {
+        assert!(parse_named_query("=count:metric{*}").is_err());
+    }
+
+    #[test]
+    fn parse_named_query_empty_query() {
+        assert!(parse_named_query("a=").is_err());
+    }
+
+    // -- has_name_prefix --
+
+    #[test]
+    fn has_name_prefix_true() {
+        assert!(has_name_prefix("a=count:metric{*}"));
+        assert!(has_name_prefix("abc=avg:metric{*}"));
+        assert!(has_name_prefix("q1=sum:metric{*}"));
+    }
+
+    #[test]
+    fn has_name_prefix_false() {
+        // No '=' at all.
+        assert!(!has_name_prefix("avg:metric{*}"));
+        // Prefix too long or has non-alphanumeric chars — treated as not a name.
+        assert!(!has_name_prefix("avg:metric{tag=value}"));
+    }
+
+    // -- extract_formula_points --
+
+    #[test]
+    fn extract_formula_points_basic() {
+        let times = vec![1000, 2000, 3000];
+        let values = vec![Some(1.0), None, Some(3.0)];
+        let pts = extract_formula_points(&times, &values);
+        assert_eq!(pts.len(), 2);
+        assert_eq!(pts[0], (1000.0, 1.0));
+        assert_eq!(pts[1], (3000.0, 3.0));
+    }
+
+    #[test]
+    fn extract_formula_points_empty() {
+        let pts = extract_formula_points(&[], &[]);
+        assert!(pts.is_empty());
     }
 }

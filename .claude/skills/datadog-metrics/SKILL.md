@@ -72,7 +72,8 @@ datadog metrics query --query "avg:system.cpu.user{env:production}" \
 
 | Flag        | Required | Description                                                       |
 |-------------|----------|-------------------------------------------------------------------|
-| `--query`   | Yes      | Datadog metric query string (e.g. `"avg:system.cpu.user{*}"`)     |
+| `--query`   | Yes      | Datadog metric query string (e.g. `"avg:system.cpu.user{*}"`). Repeatable with `name=` prefix for formula queries (e.g. `--query "a=count:metric{*}"`) |
+| `--formula` | No       | Combine named queries with arithmetic (e.g. `--formula "a * b"`). Requires all `--query` values to have a `name=` prefix. Uses the V2 timeseries formula API |
 | `--time`    | Yes      | Time range — `"last 1 hour"`, `"last 4 hours"`, or `from_ts=...&to_ts=...` from a Datadog URL |
 | `--raw`     | No       | Output raw `(timestamp, value)` JSON lines instead of summary     |
 | `--rollup`  | No       | Roll up data points into fixed-size buckets. Accepts `"hourly"`, `"daily"`, or a duration like `"5m"`, `"4h"`, `"2d"` |
@@ -138,6 +139,36 @@ With `--raw --compare`, outputs before/after stats:
 
 With `--raw --rollup --compare`, bucketed aggregates include a `period` field (`"before"`, `"after"`, or `"pivot"`).
 
+## Formula queries (`--formula`)
+
+Combine multiple named queries with arithmetic in a single API call using the V2 timeseries formula API. Each `--query` must have a short `name=` prefix (e.g. `a=`, `b=`), and `--formula` defines the arithmetic expression.
+
+```bash
+# Compute worker-seconds: count * avg_latency
+datadog metrics query \
+  --query "a=count:sinatra.async_worker.jobs{env:production}.as_count()" \
+  --query "b=avg:sinatra.async_worker.jobs.execution_time_distrib{env:production}" \
+  --formula "a * b" \
+  --time "2026-02-17T00:00:00Z to 2026-02-22T00:00:00Z"
+
+# With rollup and compare
+datadog metrics query \
+  --query "a=count:sinatra.async_worker.jobs{env:production}.as_count()" \
+  --query "b=avg:sinatra.async_worker.jobs.execution_time_distrib{env:production}" \
+  --formula "a * b" \
+  --time "2026-02-17T00:00:00Z to 2026-02-22T00:00:00Z" \
+  --rollup hourly --compare "2026-02-19T17:00:00Z"
+
+# Multiple formulas in one call
+datadog metrics query \
+  --query "a=sum:requests.count{service:web}.as_count()" \
+  --query "b=sum:errors.count{service:web}.as_count()" \
+  --formula "a" --formula "b / a * 100" \
+  --time "last 4 hours"
+```
+
+All output modes (`--raw`, `--rollup`, `--compare`, and combinations) work with formula queries.
+
 ## Time range formats
 
 - `"last 15 minutes"`, `"last 30 mins"`, `"last 30m"`
@@ -184,4 +215,18 @@ datadog metrics query --query "avg:system.cpu.user{env:production}" \
 # Raw bucketed JSON for scripting
 datadog metrics query --query "avg:system.cpu.user{env:production}" \
   --time "last 1 day" --rollup daily --raw
+
+# Formula: compute derived metric from two queries
+datadog metrics query \
+  --query "a=count:sinatra.async_worker.jobs{env:production}.as_count()" \
+  --query "b=avg:sinatra.async_worker.jobs.execution_time_distrib{env:production}" \
+  --formula "a * b" \
+  --time "last 1 day" --rollup hourly
+
+# Formula: error rate as a percentage
+datadog metrics query \
+  --query "a=sum:requests.count{service:web}.as_count()" \
+  --query "b=sum:errors.count{service:web}.as_count()" \
+  --formula "b / a * 100" \
+  --time "last 4 hours"
 ```

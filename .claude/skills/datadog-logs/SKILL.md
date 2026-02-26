@@ -126,6 +126,23 @@ The CLI validates query syntax before calling the API. Common pitfall:
 
 If validation fails, the CLI prints actionable tips and exits without making an API call.
 
+## Sort order
+
+The CLI defaults to `--sort-by newest` (descending). Use `--sort-by oldest` when you need to find when something first appeared:
+
+```bash
+datadog logs --query 'service:multiplayer "skipping checkpoint request"' \
+  --time-range "last 7 days" --sort-by oldest --limit 5
+```
+
+### Wildcard attribute search
+
+Use `*:VALUE` to search across all attributes for a value. Useful for finding logs where `@file.key` isn't set but the file key appears in other fields:
+
+```bash
+datadog logs --query 'service:multiplayer *:s8ue67bYv1SwA7BBEZQ5XP' --time-range "last 1 hour"
+```
+
 ## Examples
 
 ```bash
