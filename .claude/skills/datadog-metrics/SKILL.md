@@ -215,6 +215,62 @@ Standard Datadog metric query syntax:
 - `avg:system.cpu.user{env:production} by {host}` — grouped by host
 - `sum:multiplayer.docs.load_failed{env:production} by {error}.as_count()` — grouped errors
 
+## Common Patterns
+
+### Rate / ratio calculations (ALWAYS use --formula)
+
+When computing a rate, ratio, or percentage from two metrics, ALWAYS use `--formula` to combine them in a single API call. Do NOT query the metrics separately and compute mentally.
+
+```bash
+# OOM rate: terminations / executions * 100
+datadog metrics query \
+  --query "a=sum:sinatra.async_worker.jobs.terminated{env:production,reason:oom}.as_count()" \
+  --query "b=count:sinatra.async_worker.jobs.execution_time_distrib{env:production}.as_count()" \
+  --formula "a / b * 100" \
+  --time "last 1 day" --rollup daily
+
+# Error rate as a percentage
+datadog metrics query \
+  --query "a=sum:requests.count{service:web}.as_count()" \
+  --query "b=sum:errors.count{service:web}.as_count()" \
+  --formula "b / a * 100" \
+  --time "last 4 hours"
+```
+
+### Discovering tag values before querying
+
+Use `tag-values` to find valid tag values instead of guessing. This avoids wasted queries from incorrect tag names.
+
+```bash
+# Find job names containing "file_chunk"
+datadog metrics tag-values \
+  --metric "sinatra.async_worker.jobs.execution_time_distrib" \
+  --tag "job_name" \
+  --filter "*file_chunk*"
+
+# Then use the exact value in a query
+datadog metrics query \
+  --query "avg:sinatra.async_worker.jobs.execution_time_distrib{job_name:ml_file_chunks_index_job}" \
+  --time "last 4 hours"
+```
+
+### Before/after comparison around a deploy or change
+
+Use `--compare` with a pivot timestamp to see the impact of a deploy or config change.
+
+```bash
+datadog metrics query \
+  --query "avg:system.cpu.user{env:production}" \
+  --time "2026-02-19T14:00:00Z to 2026-02-20T02:00:00Z" \
+  --compare "2026-02-19T17:35:00Z"
+
+# With hourly rollup for more detail
+datadog metrics query \
+  --query "avg:system.cpu.user{env:production}" \
+  --time "2026-02-19T14:00:00Z to 2026-02-20T02:00:00Z" \
+  --rollup hourly --compare "2026-02-19T17:35:00Z"
+```
+
 ## Examples
 
 ```bash
