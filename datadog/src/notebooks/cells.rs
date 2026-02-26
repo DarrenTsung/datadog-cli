@@ -1,12 +1,13 @@
 use chrono::{DateTime, Utc};
 use datadog_api_client::datadogV1::model::{
-    LogStreamWidgetDefinition, LogStreamWidgetDefinitionType, NotebookAbsoluteTime,
-    NotebookCellCreateRequest, NotebookCellCreateRequestAttributes, NotebookCellResourceType,
-    NotebookCellResponseAttributes, NotebookCellTime, NotebookCellUpdateRequestAttributes,
+    FormulaAndFunctionQueryDefinition, LogStreamWidgetDefinition, LogStreamWidgetDefinitionType,
+    NotebookAbsoluteTime, NotebookCellCreateRequest, NotebookCellCreateRequestAttributes,
+    NotebookCellResourceType, NotebookCellResponseAttributes, NotebookCellTime,
     NotebookLogStreamCellAttributes, NotebookMarkdownCellAttributes,
     NotebookMarkdownCellDefinition, NotebookMarkdownCellDefinitionType, NotebookRelativeTime,
-    NotebookTimeseriesCellAttributes, TimeseriesWidgetDefinition, TimeseriesWidgetDefinitionType,
-    TimeseriesWidgetExpressionAlias, TimeseriesWidgetRequest, WidgetDisplayType, WidgetLiveSpan,
+    NotebookTimeseriesCellAttributes, TimeseriesWidgetDefinition,
+    TimeseriesWidgetDefinitionType, TimeseriesWidgetExpressionAlias, TimeseriesWidgetRequest,
+    WidgetDisplayType, WidgetLiveSpan,
 };
 use serde_derive::Deserialize;
 
@@ -142,43 +143,6 @@ pub fn cells_to_create_requests(cells: &[Cell]) -> Vec<NotebookCellCreateRequest
     cells.iter().map(cell_to_create_request).collect()
 }
 
-/// Convert create-request attributes to update-request attributes.
-/// The types are structurally identical but live in separate enums.
-pub fn create_attrs_to_update_attrs(
-    attrs: NotebookCellCreateRequestAttributes,
-) -> NotebookCellUpdateRequestAttributes {
-    match attrs {
-        NotebookCellCreateRequestAttributes::NotebookMarkdownCellAttributes(a) => {
-            NotebookCellUpdateRequestAttributes::NotebookMarkdownCellAttributes(a)
-        }
-        NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(a) => {
-            NotebookCellUpdateRequestAttributes::NotebookTimeseriesCellAttributes(a)
-        }
-        NotebookCellCreateRequestAttributes::NotebookLogStreamCellAttributes(a) => {
-            NotebookCellUpdateRequestAttributes::NotebookLogStreamCellAttributes(a)
-        }
-        NotebookCellCreateRequestAttributes::NotebookToplistCellAttributes(a) => {
-            NotebookCellUpdateRequestAttributes::NotebookToplistCellAttributes(a)
-        }
-        NotebookCellCreateRequestAttributes::NotebookHeatMapCellAttributes(a) => {
-            NotebookCellUpdateRequestAttributes::NotebookHeatMapCellAttributes(a)
-        }
-        NotebookCellCreateRequestAttributes::NotebookDistributionCellAttributes(a) => {
-            NotebookCellUpdateRequestAttributes::NotebookDistributionCellAttributes(a)
-        }
-        NotebookCellCreateRequestAttributes::UnparsedObject(u) => {
-            NotebookCellUpdateRequestAttributes::UnparsedObject(u)
-        }
-        // Catch-all for future variants.
-        _ => NotebookCellUpdateRequestAttributes::NotebookMarkdownCellAttributes(Box::new(
-            NotebookMarkdownCellAttributes::new(NotebookMarkdownCellDefinition::new(
-                "<!-- unsupported cell type -->".to_string(),
-                NotebookMarkdownCellDefinitionType::MARKDOWN,
-            )),
-        )),
-    }
-}
-
 /// Convert a `NotebookCellTime` back to a JSON-compatible string fragment for
 /// embedding inside a fenced code block.
 fn notebook_cell_time_to_json_value(time: &NotebookCellTime) -> serde_json::Value {
@@ -194,6 +158,19 @@ fn notebook_cell_time_to_json_value(time: &NotebookCellTime) -> serde_json::Valu
         }
         NotebookCellTime::UnparsedObject(_) | _ => serde_json::Value::Null,
     }
+}
+
+/// Extract the metric query string from a `TimeseriesWidgetRequest`'s
+/// `queries` array (the newer formula-based format). Returns the `query`
+/// field from the first `FormulaAndFunctionMetricQueryDefinition`.
+fn extract_metric_query_from_queries(req: &TimeseriesWidgetRequest) -> Option<String> {
+    let queries = req.queries.as_ref()?;
+    for q in queries {
+        if let FormulaAndFunctionQueryDefinition::FormulaAndFunctionMetricQueryDefinition(def) = q {
+            return Some(def.query.clone());
+        }
+    }
+    None
 }
 
 /// Convert a notebook cell response back to the markdown format the parser
@@ -225,8 +202,12 @@ pub fn notebook_cell_to_markdown(attrs: &NotebookCellResponseAttributes) -> Stri
         NotebookCellResponseAttributes::NotebookTimeseriesCellAttributes(ts) => {
             let mut obj = serde_json::Map::new();
             if let Some(req) = ts.definition.requests.first() {
+                // Try the legacy `q` field first, then the newer `queries`
+                // array (used by formula-based widget definitions).
                 if let Some(q) = &req.q {
                     obj.insert("query".into(), serde_json::Value::String(q.clone()));
+                } else if let Some(query_str) = extract_metric_query_from_queries(req) {
+                    obj.insert("query".into(), serde_json::Value::String(query_str));
                 }
                 if let Some(dt) = &req.display_type {
                     obj.insert("display_type".into(), serde_json::Value::String(dt.to_string()));
