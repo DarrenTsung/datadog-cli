@@ -76,7 +76,7 @@ datadog metrics query --query "avg:system.cpu.user{env:production}" \
 | Flag        | Required | Description                                                       |
 |-------------|----------|-------------------------------------------------------------------|
 | `--query`   | Yes      | Datadog metric query string (e.g. `"avg:system.cpu.user{*}"`). Repeatable with `name=` prefix for formula queries (e.g. `--query "a=count:metric{*}"`) |
-| `--formula` | No       | Combine named queries with arithmetic (e.g. `--formula "a * b"`). Requires all `--query` values to have a `name=` prefix. Uses the V2 timeseries formula API |
+| `--formula` | No       | Combine named queries with arithmetic (e.g. `--formula "a * b"`). Requires all `--query` values to have a `name=` prefix |
 | `--time`    | Yes      | Time range — `"last 1 hour"`, `"last 4 hours"`, or `from_ts=...&to_ts=...` from a Datadog URL |
 | `--raw`     | No       | Output raw `(timestamp, value)` JSON lines instead of summary     |
 | `--rollup`  | No       | Roll up data points into fixed-size buckets. Accepts `"hourly"`, `"daily"`, or a duration like `"5m"`, `"4h"`, `"2d"` |
@@ -86,7 +86,7 @@ datadog metrics query --query "avg:system.cpu.user{env:production}" \
 
 For each series, prints:
 - Display name and tags
-- Point count and interval
+- Point count
 - Min / Max / Avg / Last values
 - A braille line chart (via `textplots`) with local timestamps on the X axis
 
@@ -144,7 +144,7 @@ With `--raw --rollup --compare`, bucketed aggregates include a `period` field (`
 
 ## Formula queries (`--formula`)
 
-Combine multiple named queries with arithmetic in a single API call using the V2 timeseries formula API. Each `--query` must have a short `name=` prefix (e.g. `a=`, `b=`), and `--formula` defines the arithmetic expression.
+Combine multiple named queries with arithmetic in a single API call. Each `--query` must have a short `name=` prefix (e.g. `a=`, `b=`), and `--formula` defines the arithmetic expression.
 
 ```bash
 # Compute worker-seconds: count * avg_latency

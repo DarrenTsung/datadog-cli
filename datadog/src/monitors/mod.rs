@@ -341,14 +341,14 @@ async fn run_monitors_inspect(
                 println!("## Underlying Metric: {}", metric_query);
             }
 
-            let from_s = time_range.from.timestamp();
-            let to_s = time_range.to.timestamp();
+            let from_ms = time_range.from.timestamp_millis();
+            let to_ms = time_range.to.timestamp_millis();
 
-            match metrics::api::query_metrics(api_key, app_key, from_s, to_s, &metric_query).await
+            match metrics::query_single_v2(api_key, app_key, from_ms, to_ms, &metric_query, None)
+                .await
             {
-                Ok(response) => {
-                    let series = response.series.unwrap_or_default();
-                    if series.is_empty() {
+                Ok(results) => {
+                    if results.is_empty() {
                         if raw {
                             println!(
                                 "{}",
@@ -358,28 +358,24 @@ async fn run_monitors_inspect(
                             eprintln!("No series returned for metric query: {}", metric_query);
                         }
                     } else {
-                        let from_ms = from_s as f64 * 1000.0;
-                        let to_ms = to_s as f64 * 1000.0;
-
-                        let all_points: Vec<Vec<(f64, f64)>> =
-                            series.iter().map(|s| metrics::extract_points(s)).collect();
+                        let from_ms_f = from_ms as f64;
+                        let to_ms_f = to_ms as f64;
 
                         if raw {
-                            // Output raw JSON points.
-                            for (s, pts) in series.iter().zip(&all_points) {
-                                let label = s
-                                    .tag_set
-                                    .as_ref()
-                                    .map(|t| t.join(","))
-                                    .or_else(|| s.scope.clone())
-                                    .unwrap_or_default();
+                            // Output raw JSON points with monitor-specific wrapper.
+                            for (pts, info) in &results {
+                                let series_name = if info.group_tags.is_empty() {
+                                    info.label.clone()
+                                } else {
+                                    format!("{}{{{}}}", info.label, info.group_tags.join(","))
+                                };
                                 for &(ts_ms, value) in pts {
                                     let dt = Utc.timestamp_millis_opt(ts_ms as i64).unwrap();
                                     println!(
                                         "{}",
                                         serde_json::json!({
                                             "section": "metric",
-                                            "series": label,
+                                            "series": series_name,
                                             "timestamp": dt.to_rfc3339(),
                                             "value": value,
                                         })
@@ -387,22 +383,35 @@ async fn run_monitors_inspect(
                                 }
                             }
                         } else {
+                            let all_pts: Vec<Vec<(f64, f64)>> =
+                                results.iter().map(|(pts, _)| pts.clone()).collect();
                             let (global_y_min, global_y_max) =
-                                metrics::global_y_range(&all_points);
-                            for (i, (s, pts)) in
-                                series.iter().zip(&all_points).enumerate()
-                            {
+                                metrics::global_y_range(&all_pts);
+                            for (i, (pts, info)) in results.iter().enumerate() {
                                 if i > 0 {
                                     println!();
                                 }
-                                metrics::print_series_summary(
-                                    s,
-                                    pts,
-                                    from_ms,
-                                    to_ms,
-                                    global_y_min,
-                                    global_y_max,
-                                );
+                                metrics::print_formula_series_header(info);
+                                if pts.is_empty() {
+                                    println!("(no data points)");
+                                } else {
+                                    let values: Vec<f64> =
+                                        pts.iter().map(|(_, v)| *v).collect();
+                                    let min =
+                                        values.iter().cloned().fold(f64::INFINITY, f64::min);
+                                    let max =
+                                        values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                                    let avg =
+                                        values.iter().sum::<f64>() / values.len() as f64;
+                                    let last = *values.last().unwrap();
+                                    println!(
+                                        "Min: {:.1}  Max: {:.1}  Avg: {:.1}  Last: {:.1}",
+                                        min, max, avg, last,
+                                    );
+                                    metrics::print_chart(
+                                        pts, from_ms_f, to_ms_f, global_y_min, global_y_max,
+                                    );
+                                }
                             }
                         }
                     }
