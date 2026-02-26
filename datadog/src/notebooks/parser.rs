@@ -343,6 +343,9 @@ mod tests {
             vec![Cell::MetricQuery(MetricQueryCell {
                 query: "avg:system.cpu.user{env:production}".to_string(),
                 time: None,
+                title: None,
+                aliases: None,
+                display_type: None,
             })]
         );
     }
@@ -357,6 +360,9 @@ mod tests {
             vec![Cell::MetricQuery(MetricQueryCell {
                 query: "avg:system.cpu.user{*}".to_string(),
                 time: Some(cells::CellTime::Relative("4h".to_string())),
+                title: None,
+                aliases: None,
+                display_type: None,
             })]
         );
     }

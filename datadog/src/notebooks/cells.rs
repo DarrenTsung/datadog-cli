@@ -6,7 +6,7 @@ use datadog_api_client::datadogV1::model::{
     NotebookLogStreamCellAttributes, NotebookMarkdownCellAttributes,
     NotebookMarkdownCellDefinition, NotebookMarkdownCellDefinitionType, NotebookRelativeTime,
     NotebookTimeseriesCellAttributes, TimeseriesWidgetDefinition, TimeseriesWidgetDefinitionType,
-    TimeseriesWidgetRequest, WidgetLiveSpan,
+    TimeseriesWidgetExpressionAlias, TimeseriesWidgetRequest, WidgetDisplayType, WidgetLiveSpan,
 };
 use serde_derive::Deserialize;
 
@@ -31,6 +31,14 @@ pub struct LogQueryCell {
 pub struct MetricQueryCell {
     pub query: String,
     pub time: Option<CellTime>,
+    /// Graph title displayed above the timeseries widget.
+    pub title: Option<String>,
+    /// Display aliases for metric expressions. Maps the query expression
+    /// to a human-readable name shown in the legend.
+    /// Example: `{"avg:system.cpu.user{*}": "CPU Usage"}`
+    pub aliases: Option<std::collections::HashMap<String, String>>,
+    /// Display type: "line" (default), "bars", or "area".
+    pub display_type: Option<String>,
 }
 
 /// Per-cell time override. Either a relative span string like `"4h"` or an
@@ -83,11 +91,42 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
             NotebookCellCreateRequestAttributes::NotebookLogStreamCellAttributes(Box::new(attrs))
         }
         Cell::MetricQuery(metric_query) => {
-            let request = TimeseriesWidgetRequest::new().q(metric_query.query.clone());
-            let definition = TimeseriesWidgetDefinition::new(
+            let mut request = TimeseriesWidgetRequest::new().q(metric_query.query.clone());
+
+            // Set display type (line/bars/area).
+            if let Some(ref dt) = metric_query.display_type {
+                request.display_type = Some(match dt.to_lowercase().as_str() {
+                    "bars" | "bar" => WidgetDisplayType::BARS,
+                    "area" => WidgetDisplayType::AREA,
+                    _ => WidgetDisplayType::LINE,
+                });
+            }
+
+            // Set aliases via metadata.
+            if let Some(ref aliases) = metric_query.aliases {
+                let metadata: Vec<TimeseriesWidgetExpressionAlias> = aliases
+                    .iter()
+                    .map(|(expr, alias)| {
+                        let mut a = TimeseriesWidgetExpressionAlias::new(expr.clone());
+                        a.alias_name = Some(alias.clone());
+                        a
+                    })
+                    .collect();
+                if !metadata.is_empty() {
+                    request.metadata = Some(metadata);
+                }
+            }
+
+            let mut definition = TimeseriesWidgetDefinition::new(
                 vec![request],
                 TimeseriesWidgetDefinitionType::TIMESERIES,
             );
+
+            // Set graph title.
+            if let Some(ref title) = metric_query.title {
+                definition.title = Some(title.clone());
+            }
+
             let mut attrs = NotebookTimeseriesCellAttributes::new(definition);
             if let Some(cell_time) = &metric_query.time {
                 attrs.time = Some(Some(cell_time_to_notebook_cell_time(cell_time)));
@@ -189,6 +228,23 @@ pub fn notebook_cell_to_markdown(attrs: &NotebookCellResponseAttributes) -> Stri
                 if let Some(q) = &req.q {
                     obj.insert("query".into(), serde_json::Value::String(q.clone()));
                 }
+                if let Some(dt) = &req.display_type {
+                    obj.insert("display_type".into(), serde_json::Value::String(dt.to_string()));
+                }
+                if let Some(metadata) = &req.metadata {
+                    let mut aliases = serde_json::Map::new();
+                    for alias in metadata {
+                        if let Some(name) = &alias.alias_name {
+                            aliases.insert(alias.expression.clone(), serde_json::Value::String(name.clone()));
+                        }
+                    }
+                    if !aliases.is_empty() {
+                        obj.insert("aliases".into(), serde_json::Value::Object(aliases));
+                    }
+                }
+            }
+            if let Some(title) = &ts.definition.title {
+                obj.insert("title".into(), serde_json::Value::String(title.clone()));
             }
             if let Some(Some(time)) = &ts.time {
                 obj.insert("time".into(), notebook_cell_time_to_json_value(time));
@@ -360,6 +416,9 @@ mod tests {
         let cell = Cell::MetricQuery(MetricQueryCell {
             query: "avg:system.cpu.user{env:production}".to_string(),
             time: None,
+            title: None,
+            aliases: None,
+            display_type: None,
         });
         let request = cell_to_create_request(&cell);
 
@@ -386,6 +445,9 @@ mod tests {
         let cell = Cell::MetricQuery(MetricQueryCell {
             query: "avg:system.cpu.user{*}".to_string(),
             time: Some(CellTime::Relative("1h".to_string())),
+            title: None,
+            aliases: None,
+            display_type: None,
         });
         let request = cell_to_create_request(&cell);
 
