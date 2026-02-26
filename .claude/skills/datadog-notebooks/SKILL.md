@@ -57,10 +57,25 @@ A fenced code block tagged ` ```metric-query ` is parsed as JSON and becomes a *
 }
 ```
 
-| Field   | Required | Description                                                  |
-|---------|----------|--------------------------------------------------------------|
-| `query` | Yes      | Datadog metric query string (e.g. `"avg:system.cpu.user{*}"`) |
-| `time`  | No       | Per-cell time override (same format as log-query `time`). If omitted, uses the notebook's global time from `--time`. |
+With title, aliases, and display type:
+
+```json
+{
+  "query": "avg:system.cpu.user{env:production} by {host}",
+  "title": "CPU Usage by Host",
+  "aliases": {"avg:system.cpu.user{env:production} by {host}": "CPU"},
+  "display_type": "area",
+  "time": {"start": "2026-02-17T08:00:00Z", "end": "2026-02-26T08:00:00Z"}
+}
+```
+
+| Field          | Required | Description                                                  |
+|----------------|----------|--------------------------------------------------------------|
+| `query`        | Yes      | Datadog metric query string (e.g. `"avg:system.cpu.user{*}"`) |
+| `time`         | No       | Per-cell time override (same format as log-query `time`). If omitted, uses the notebook's global time from `--time`. |
+| `title`        | No       | Graph title displayed above the timeseries widget.           |
+| `aliases`      | No       | Map of query expression to display name for the legend. Example: `{"avg:system.cpu.user{*}": "CPU Usage"}` |
+| `display_type` | No       | Graph style: `"line"` (default), `"bars"`, or `"area"`.     |
 
 ## Example markdown file
 

@@ -1,6 +1,6 @@
 ---
 name: datadog-unfurl
-description: Unfurl a Datadog dashboard or metric explorer URL (e.g. https://app.datadoghq.com/s/e16e18c08/yry-azg-bva) — resolve shared links, show widget details, and download the snapshot image. Use when the user pastes a Datadog dashboard, metric explorer, or shared link and wants to understand what it shows.
+description: Unfurl a Datadog dashboard, metric explorer, or notebook URL (e.g. https://app.datadoghq.com/s/e16e18c08/yry-azg-bva) — resolve shared links, show widget details, and download the snapshot image. Use when the user pastes a Datadog dashboard, metric explorer, notebook, or shared link and wants to understand what it shows.
 ---
 
 # Datadog Unfurl
@@ -10,7 +10,7 @@ description: Unfurl a Datadog dashboard or metric explorer URL (e.g. https://app
 ## Usage
 
 ```bash
-# Shared short link (resolves automatically — works for dashboards and metric explorer)
+# Shared short link (resolves automatically — works for dashboards, metric explorer, and notebooks)
 datadog unfurl "https://app.datadoghq.com/s/e16e18c08/yry-azg-bva"
 
 # Direct dashboard URL with a focused widget
@@ -28,11 +28,12 @@ datadog unfurl "https://app.datadoghq.com/s/e16e18c08/yry-azg-bva" --json
 
 ## What it does
 
-1. **Resolves `/s/` short links** — follows the redirect and extracts the real URL (dashboard or metric explorer)
+1. **Resolves `/s/` short links** — follows the redirect and extracts the real URL (dashboard, metric explorer, or notebook)
 2. **Fetches dashboard data** via the Datadog API (for dashboard URLs)
 3. **Decodes metric explorer fragments** — metric explorer URLs encode the widget definition as lz-string in the URL fragment; the tool decompresses and parses it
-4. **Shows widget details** — title, type, formulas, and metric queries in a readable format
-5. **Downloads the snapshot image** to `/tmp/dd-widget-<ID>.png` or `/tmp/dd-metric-explorer.png` (for shared links only — this is the same `og:image` that Slack unfurls)
+4. **Fetches notebook cells** — for notebook URLs, fetches the notebook via API and shows the specific cell (if `cell_id` is present) or all cells, using the same widget format as dashboards
+5. **Shows widget details** — title, type, formulas, and metric queries in a readable format
+6. **Downloads the snapshot image** to `/tmp/dd-widget-<ID>.png`, `/tmp/dd-metric-explorer.png`, or `/tmp/dd-notebook-snapshot.png` (for shared links only — this is the same `og:image` that Slack unfurls)
 
 ## Supported URL formats
 
@@ -42,6 +43,7 @@ datadog unfurl "https://app.datadoghq.com/s/e16e18c08/yry-azg-bva" --json
 | Dashboard with widget | `https://app.datadoghq.com/dashboard/ID/title?fullscreen_widget=123` |
 | Dashboard (all widgets) | `https://app.datadoghq.com/dashboard/ID/title` |
 | Metric explorer | `https://app.datadoghq.com/metric/explorer?start=...&end=...#N4Ig...` |
+| Notebook cell | `https://app.datadoghq.com/notebook/ID?cell_id=CELL_ID` (typically via short link) |
 
 ## Widget focus
 
