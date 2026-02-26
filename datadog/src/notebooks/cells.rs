@@ -3,11 +3,11 @@ use datadog_api_client::datadogV1::model::{
     FormulaAndFunctionQueryDefinition, LogStreamWidgetDefinition, LogStreamWidgetDefinitionType,
     NotebookAbsoluteTime, NotebookCellCreateRequest, NotebookCellCreateRequestAttributes,
     NotebookCellResourceType, NotebookCellResponseAttributes, NotebookCellTime,
-    NotebookLogStreamCellAttributes, NotebookMarkdownCellAttributes,
-    NotebookMarkdownCellDefinition, NotebookMarkdownCellDefinitionType, NotebookRelativeTime,
-    NotebookTimeseriesCellAttributes, TimeseriesWidgetDefinition,
-    TimeseriesWidgetDefinitionType, TimeseriesWidgetExpressionAlias, TimeseriesWidgetRequest,
-    WidgetDisplayType, WidgetLiveSpan,
+    NotebookCellUpdateRequestAttributes, NotebookLogStreamCellAttributes,
+    NotebookMarkdownCellAttributes, NotebookMarkdownCellDefinition,
+    NotebookMarkdownCellDefinitionType, NotebookRelativeTime, NotebookTimeseriesCellAttributes,
+    TimeseriesWidgetDefinition, TimeseriesWidgetDefinitionType, TimeseriesWidgetExpressionAlias,
+    TimeseriesWidgetRequest, WidgetDisplayType, WidgetLiveSpan,
 };
 use serde_derive::Deserialize;
 
@@ -141,6 +141,34 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
 
 pub fn cells_to_create_requests(cells: &[Cell]) -> Vec<NotebookCellCreateRequest> {
     cells.iter().map(cell_to_create_request).collect()
+}
+
+/// Convert CreateRequestAttributes to UpdateRequestAttributes.
+/// The inner types are identical — only the enum wrapper differs.
+pub fn create_attrs_to_update_attrs(
+    attrs: &NotebookCellCreateRequestAttributes,
+) -> NotebookCellUpdateRequestAttributes {
+    match attrs {
+        NotebookCellCreateRequestAttributes::NotebookMarkdownCellAttributes(a) => {
+            NotebookCellUpdateRequestAttributes::NotebookMarkdownCellAttributes(a.clone())
+        }
+        NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(a) => {
+            NotebookCellUpdateRequestAttributes::NotebookTimeseriesCellAttributes(a.clone())
+        }
+        NotebookCellCreateRequestAttributes::NotebookToplistCellAttributes(a) => {
+            NotebookCellUpdateRequestAttributes::NotebookToplistCellAttributes(a.clone())
+        }
+        NotebookCellCreateRequestAttributes::NotebookHeatMapCellAttributes(a) => {
+            NotebookCellUpdateRequestAttributes::NotebookHeatMapCellAttributes(a.clone())
+        }
+        NotebookCellCreateRequestAttributes::NotebookDistributionCellAttributes(a) => {
+            NotebookCellUpdateRequestAttributes::NotebookDistributionCellAttributes(a.clone())
+        }
+        NotebookCellCreateRequestAttributes::NotebookLogStreamCellAttributes(a) => {
+            NotebookCellUpdateRequestAttributes::NotebookLogStreamCellAttributes(a.clone())
+        }
+        _ => panic!("Unsupported cell type for update"),
+    }
 }
 
 /// Convert a `NotebookCellTime` back to a JSON-compatible string fragment for

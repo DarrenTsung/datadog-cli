@@ -420,7 +420,7 @@ pub async fn run_notebooks(
             let t2 = Instant::now();
             let response =
                 api::update_notebook(api_key, app_key, id, &title, &cells, live_span).await?;
-            eprintln!("[{:.2}s] update API calls (clear + insert)", t2.elapsed().as_secs_f64());
+            eprintln!("[{:.2}s] update API calls (fetch + replace)", t2.elapsed().as_secs_f64());
 
             if let Some(data) = response.data {
                 println!("Updated notebook: https://app.datadoghq.com/notebook/{}", data.id);

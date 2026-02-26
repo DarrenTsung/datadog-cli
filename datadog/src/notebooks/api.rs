@@ -4,10 +4,11 @@ use datadog_api_client::datadogV1::api::api_notebooks::{
     ListNotebooksOptionalParams, NotebooksAPI,
 };
 use datadog_api_client::datadogV1::model::{
-    NotebookCellCreateRequest, NotebookCreateData, NotebookCreateDataAttributes,
-    NotebookCreateRequest, NotebookGlobalTime, NotebookRelativeTime, NotebookResourceType,
-    NotebookResponse, NotebookUpdateCell, NotebookUpdateData, NotebookUpdateDataAttributes,
-    NotebookUpdateRequest, NotebooksResponse, WidgetLiveSpan,
+    NotebookCellCreateRequest, NotebookCellUpdateRequest, NotebookCreateData,
+    NotebookCreateDataAttributes, NotebookCreateRequest, NotebookGlobalTime,
+    NotebookRelativeTime, NotebookResourceType, NotebookResponse, NotebookUpdateCell,
+    NotebookUpdateData, NotebookUpdateDataAttributes, NotebookUpdateRequest, NotebooksResponse,
+    WidgetLiveSpan,
 };
 
 use super::cells;
@@ -92,34 +93,53 @@ pub async fn update_notebook(
     let api = NotebooksAPI::with_config(config);
     let time = make_global_time(live_span);
 
-    // Step 1: Clear all existing cells by replacing with a single placeholder.
-    // This avoids cell-ID duplication bugs where the API merges old and new
-    // cells in unexpected ways.
-    let placeholder = cells::cells_to_create_requests(&[Cell::Markdown(String::new())]);
-    let clear_cells: Vec<NotebookUpdateCell> = placeholder
-        .into_iter()
-        .map(|c| NotebookUpdateCell::NotebookCellCreateRequest(Box::new(c)))
-        .collect();
-    let clear_body = NotebookUpdateRequest::new(NotebookUpdateData::new(
-        NotebookUpdateDataAttributes::new(clear_cells, title.to_string(), time.clone()),
-        NotebookResourceType::NOTEBOOKS,
-    ));
-    api.update_notebook(notebook_id, clear_body)
-        .await
-        .map_err(|e| match &e {
-            datadog::Error::ResponseError(resp) => {
-                anyhow!("Failed to clear notebook ({}): {}", resp.status, resp.content)
-            }
-            _ => anyhow!(e).context("Failed to clear notebook"),
-        })?;
+    // Fetch existing notebook to get cell IDs. The update API appends
+    // CreateRequests as new cells — to get replacement behavior we must
+    // reference existing cell IDs via UpdateRequests so the API knows to
+    // delete unreferenced cells.
+    let existing = api.get_notebook(notebook_id).await.map_err(|e| match &e {
+        datadog::Error::ResponseError(resp) => {
+            anyhow!("Failed to fetch notebook ({}): {}", resp.status, resp.content)
+        }
+        _ => anyhow!(e).context("Failed to fetch notebook"),
+    })?;
 
-    // Step 2: Insert the actual new cells.
-    let new_cells: Vec<NotebookCellCreateRequest> =
+    let existing_ids: Vec<String> = existing
+        .data
+        .as_ref()
+        .map(|d| {
+            d.attributes
+                .cells
+                .iter()
+                .map(|c| c.id.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let new_create_cells: Vec<NotebookCellCreateRequest> =
         cells::cells_to_create_requests(parsed_cells);
-    let cell_requests: Vec<NotebookUpdateCell> = new_cells
+
+    // For each new cell: if there's a corresponding existing cell ID at that
+    // position, wrap it as an UpdateRequest (reusing the ID). Otherwise use a
+    // CreateRequest. Existing cells beyond the new count are not referenced
+    // and get auto-deleted by the API.
+    let cell_requests: Vec<NotebookUpdateCell> = new_create_cells
         .into_iter()
-        .map(|c| NotebookUpdateCell::NotebookCellCreateRequest(Box::new(c)))
+        .enumerate()
+        .map(|(i, create)| {
+            if i < existing_ids.len() {
+                let update = NotebookCellUpdateRequest::new(
+                    cells::create_attrs_to_update_attrs(&create.attributes),
+                    existing_ids[i].clone(),
+                    create.type_,
+                );
+                NotebookUpdateCell::NotebookCellUpdateRequest(Box::new(update))
+            } else {
+                NotebookUpdateCell::NotebookCellCreateRequest(Box::new(create))
+            }
+        })
         .collect();
+
     let body = NotebookUpdateRequest::new(NotebookUpdateData::new(
         NotebookUpdateDataAttributes::new(cell_requests, title.to_string(), time),
         NotebookResourceType::NOTEBOOKS,
