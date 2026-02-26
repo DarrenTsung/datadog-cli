@@ -5,7 +5,10 @@ description: Query Datadog metrics from the command line. Use when the user want
 
 # Datadog Metrics CLI
 
-The `datadog metrics query` subcommand queries Datadog metrics and displays a summary with a terminal chart, or outputs raw data points as JSON lines.
+The `datadog metrics` command has two subcommands:
+
+- **`query`** — Query Datadog metrics and display a summary with a terminal chart, or output raw data points as JSON lines.
+- **`tag-values`** — List known tag values for a given metric and tag key.
 
 ## Authentication
 
@@ -168,6 +171,31 @@ datadog metrics query \
 ```
 
 All output modes (`--raw`, `--rollup`, `--compare`, and combinations) work with formula queries.
+
+## Tag values
+
+List known tag values for a given metric. Useful for discovering valid tag values before constructing a metrics query.
+
+```bash
+# List all job_name values for a metric
+datadog metrics tag-values \
+  --metric "sinatra.async_worker.jobs.execution_time_distrib" \
+  --tag "job_name"
+
+# Filter with a glob pattern
+datadog metrics tag-values \
+  --metric "sinatra.async_worker.jobs.execution_time_distrib" \
+  --tag "job_name" \
+  --filter "*file_chunk*"
+```
+
+### Tag values flags
+
+| Flag       | Required | Description                                                   |
+|------------|----------|---------------------------------------------------------------|
+| `--metric` | Yes      | Metric name (e.g. `"sinatra.async_worker.jobs.execution_time_distrib"`) |
+| `--tag`    | Yes      | Tag key to list values for (e.g. `"job_name"`)                |
+| `--filter` | No       | Glob filter on tag values (e.g. `"*file_chunk*"`)             |
 
 ## Time range formats
 

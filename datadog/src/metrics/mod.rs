@@ -53,6 +53,21 @@ pub enum MetricsCommand {
         #[structopt(long)]
         compare: Option<String>,
     },
+
+    /// List known tag values for a given metric and tag key.
+    TagValues {
+        /// Metric name (e.g. "sinatra.async_worker.jobs.execution_time_distrib").
+        #[structopt(long)]
+        metric: String,
+
+        /// Tag key to list values for (e.g. "job_name").
+        #[structopt(long)]
+        tag: String,
+
+        /// Optional glob filter on tag values (e.g. "*filechunk*").
+        #[structopt(long)]
+        filter: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -560,6 +575,46 @@ pub async fn run_metrics(
 
             Ok(())
         }
+
+        MetricsCommand::TagValues {
+            metric,
+            tag,
+            filter,
+        } => {
+            let response = api::list_tags_by_metric_name(api_key, app_key, &metric).await?;
+
+            let tags = response
+                .data
+                .and_then(|d| d.attributes)
+                .and_then(|a| a.tags)
+                .unwrap_or_default();
+
+            // Extract values for the requested tag key.
+            let prefix = format!("{}:", tag);
+            let mut values: Vec<&str> = tags
+                .iter()
+                .filter_map(|t| t.strip_prefix(&prefix))
+                .collect();
+
+            // Apply glob filter if provided.
+            if let Some(ref pattern) = filter {
+                let glob = glob_pattern(pattern);
+                values.retain(|v| glob_match(&glob, v));
+            }
+
+            values.sort_unstable();
+            values.dedup();
+
+            if values.is_empty() {
+                eprintln!("No values found for tag \"{}\" on metric \"{}\"", tag, metric);
+            } else {
+                for v in &values {
+                    println!("{}", v);
+                }
+            }
+
+            Ok(())
+        }
     }
 }
 
@@ -1025,6 +1080,46 @@ fn print_raw_compare(points: &[(f64, f64)], pivot_ms: f64, series_label: &str) {
 }
 
 // ---------------------------------------------------------------------------
+// Glob matching for --filter
+// ---------------------------------------------------------------------------
+
+/// Compile a simple glob pattern (supporting only `*`) into a list of literal
+/// segments.  E.g. `"*filechunk*"` → `["", "filechunk", ""]`.
+fn glob_pattern(pattern: &str) -> Vec<String> {
+    pattern.split('*').map(String::from).collect()
+}
+
+/// Check whether `text` matches the glob segments produced by [`glob_pattern`].
+fn glob_match(segments: &[String], text: &str) -> bool {
+    if segments.is_empty() {
+        return text.is_empty();
+    }
+
+    // The first segment must be a prefix of the text.
+    if !text.starts_with(segments[0].as_str()) {
+        return false;
+    }
+    let mut rest = &text[segments[0].len()..];
+
+    for seg in &segments[1..] {
+        if let Some(pos) = rest.find(seg.as_str()) {
+            rest = &rest[pos + seg.len()..];
+        } else {
+            return false;
+        }
+    }
+
+    // If the pattern ended with `*` the last segment is "" and we already
+    // consumed it. If it didn't, the last segment must reach exactly to the
+    // end of `text` — which means `rest` must be empty.
+    if segments.last().map_or(false, |s| !s.is_empty()) {
+        rest.is_empty()
+    } else {
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1269,5 +1364,39 @@ mod tests {
     fn extract_formula_points_empty() {
         let pts = extract_formula_points(&[], &[]);
         assert!(pts.is_empty());
+    }
+
+    // -- glob_match --
+
+    #[test]
+    fn glob_match_wildcard_both_ends() {
+        let pat = glob_pattern("*file_chunk*");
+        assert!(glob_match(&pat, "ml_file_chunks_index_job"));
+        assert!(glob_match(&pat, "file_chunk_upload"));
+        assert!(glob_match(&pat, "file_chunk"));
+        assert!(!glob_match(&pat, "something_else"));
+    }
+
+    #[test]
+    fn glob_match_prefix_wildcard() {
+        let pat = glob_pattern("ml_*");
+        assert!(glob_match(&pat, "ml_file_chunks"));
+        assert!(glob_match(&pat, "ml_"));
+        assert!(!glob_match(&pat, "other"));
+    }
+
+    #[test]
+    fn glob_match_no_wildcard() {
+        let pat = glob_pattern("exact");
+        assert!(glob_match(&pat, "exact"));
+        assert!(!glob_match(&pat, "exact_suffix"));
+        assert!(!glob_match(&pat, "prefix_exact"));
+    }
+
+    #[test]
+    fn glob_match_all() {
+        let pat = glob_pattern("*");
+        assert!(glob_match(&pat, "anything"));
+        assert!(glob_match(&pat, ""));
     }
 }

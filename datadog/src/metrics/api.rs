@@ -2,10 +2,12 @@ use anyhow::Context;
 use datadog_api_client::datadog::{APIKey, Configuration};
 use datadog_api_client::datadogV1::api::api_metrics::MetricsAPI as MetricsAPIV1;
 use datadog_api_client::datadogV1::model::MetricsQueryResponse;
-use datadog_api_client::datadogV2::api::api_metrics::MetricsAPI as MetricsAPIV2;
+use datadog_api_client::datadogV2::api::api_metrics::{
+    ListTagsByMetricNameOptionalParams, MetricsAPI as MetricsAPIV2,
+};
 use datadog_api_client::datadogV2::model::{
-    MetricsDataSource, MetricsTimeseriesQuery, QueryFormula, TimeseriesFormulaQueryRequest,
-    TimeseriesFormulaQueryResponse, TimeseriesFormulaRequest,
+    MetricAllTagsResponse, MetricsDataSource, MetricsTimeseriesQuery, QueryFormula,
+    TimeseriesFormulaQueryRequest, TimeseriesFormulaQueryResponse, TimeseriesFormulaRequest,
     TimeseriesFormulaRequestAttributes, TimeseriesFormulaRequestType, TimeseriesQuery,
 };
 
@@ -87,4 +89,20 @@ pub async fn query_timeseries_formula(
     api.query_timeseries_data(body)
         .await
         .context("Failed to query timeseries formula")
+}
+
+pub async fn list_tags_by_metric_name(
+    api_key: &str,
+    app_key: &str,
+    metric_name: &str,
+) -> anyhow::Result<MetricAllTagsResponse> {
+    let config = make_configuration(api_key, app_key);
+    let api = MetricsAPIV2::with_config(config);
+
+    let params = ListTagsByMetricNameOptionalParams::default()
+        .filter_include_tag_values(true);
+
+    api.list_tags_by_metric_name(metric_name.to_string(), params)
+        .await
+        .context("Failed to list tags for metric")
 }
