@@ -77,6 +77,10 @@ enum ResolvedUrl {
         url: String,
         og_image_url: Option<String>,
     },
+    Notebook {
+        url: String,
+        og_image_url: Option<String>,
+    },
 }
 
 /// Follow the /s/ short link redirect. Datadog renders these as a SPA, but the
@@ -129,8 +133,25 @@ async fn resolve_short_link(url: &str) -> anyhow::Result<ResolvedUrl> {
         });
     }
 
+    // Check if it resolved to a notebook URL.
+    if final_url.contains("/notebook/") {
+        let decoded = final_url.replace("&amp;", "&");
+        eprintln!("Resolved to notebook: {}", decoded);
+        return Ok(ResolvedUrl::Notebook {
+            url: decoded,
+            og_image_url,
+        });
+    }
+    if let Some(notebook_url) = extract_url_from_html(&body, "https://app.datadoghq.com/notebook/") {
+        eprintln!("Resolved to notebook: {}", notebook_url);
+        return Ok(ResolvedUrl::Notebook {
+            url: notebook_url,
+            og_image_url,
+        });
+    }
+
     Err(anyhow!(
-        "Could not resolve short link. The page loaded but no dashboard or metric explorer URL was found.\n\
+        "Could not resolve short link. The page loaded but no dashboard, metric explorer, or notebook URL was found.\n\
          Try opening {} in a browser and passing the resolved URL directly.",
         url
     ))
@@ -168,6 +189,17 @@ fn extract_dashboard_url_from_html(html: &str) -> Option<String> {
 fn extract_metric_explorer_url_from_html(html: &str) -> Option<String> {
     let pattern = "https://app.datadoghq.com/metric/explorer";
     let start = html.find(pattern)?;
+    let rest = &html[start..];
+    let end = rest
+        .find(|c: char| c == '"' || c == '\'' || c == ' ' || c == '>' || c == '\\')
+        .unwrap_or(rest.len());
+    let raw = &rest[..end];
+    Some(raw.replace("&amp;", "&"))
+}
+
+/// Generic helper: scan HTML body for a URL with the given prefix.
+fn extract_url_from_html(html: &str, prefix: &str) -> Option<String> {
+    let start = html.find(prefix)?;
     let rest = &html[start..];
     let end = rest
         .find(|c: char| c == '"' || c == '\'' || c == ' ' || c == '>' || c == '\\')
@@ -472,6 +504,21 @@ pub async fn run_unfurl(
                 println!("{}", serde_json::to_string_pretty(&widgets_array)?);
             } else {
                 print!("{}", format_widgets(widgets_array));
+            }
+        }
+        ResolvedUrl::Notebook { url, og_image_url } => {
+            eprintln!("Notebook: {}", url);
+
+            if let Some(image_url) = &og_image_url {
+                let path = "/tmp/dd-notebook-snapshot.png";
+                match download_to_file(image_url, path).await {
+                    Ok(()) => {
+                        eprintln!("Snapshot: {}", path);
+                    }
+                    Err(e) => eprintln!("Failed to download snapshot: {}", e),
+                }
+            } else {
+                eprintln!("(no snapshot image found)");
             }
         }
     }
