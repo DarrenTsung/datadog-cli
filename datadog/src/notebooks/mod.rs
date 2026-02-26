@@ -352,10 +352,11 @@ pub async fn run_notebooks(
             let content = std::fs::read_to_string(&file)
                 .with_context(|| format!("Failed to read file: {file}"))?;
             let content = fix_dates_in_file(&file, &content)?;
-            let cells = parser::parse_markdown(&content)?;
+            let mut cells = parser::parse_markdown(&content)?;
             if cells.is_empty() {
                 return Err(anyhow!("No cells parsed from {file}"));
             }
+            strip_title_from_cells(&mut cells);
             let response =
                 api::create_notebook(api_key, app_key, &title, &cells, live_span).await?;
             if let Some(data) = response.data {
@@ -372,20 +373,28 @@ pub async fn run_notebooks(
             let content = std::fs::read_to_string(&file)
                 .with_context(|| format!("Failed to read file: {file}"))?;
             let content = fix_dates_in_file(&file, &content)?;
-            let cells = parser::parse_markdown(&content)?;
+            let mut cells = parser::parse_markdown(&content)?;
             if cells.is_empty() {
                 return Err(anyhow!("No cells parsed from {file}"));
             }
 
             let title = match title {
                 Some(t) => t,
-                None => {
-                    let existing = api::get_notebook(api_key, app_key, id).await?;
-                    existing
-                        .data
-                        .map(|d| d.attributes.name)
-                        .unwrap_or_else(|| "Untitled".to_string())
-                }
+                None => extract_title_from_cells(&cells).unwrap_or_else(|| {
+                    eprintln!("Warning: no H1 title found in file and --title not provided; fetching from Datadog");
+                    String::new()
+                }),
+            };
+            // If we couldn't find a local title, fetch from the existing notebook.
+            let title = if title.is_empty() {
+                let existing = api::get_notebook(api_key, app_key, id).await?;
+                existing
+                    .data
+                    .map(|d| d.attributes.name)
+                    .unwrap_or_else(|| "Untitled".to_string())
+            } else {
+                strip_title_from_cells(&mut cells);
+                title
             };
 
             let response =
@@ -415,6 +424,54 @@ pub async fn run_notebooks(
     }
 
     Ok(())
+}
+
+/// Extract a title from the first H1 heading in the parsed cells.
+fn extract_title_from_cells(cells: &[cells::Cell]) -> Option<String> {
+    for cell in cells {
+        if let cells::Cell::Markdown(text) = cell {
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if let Some(title) = trimmed.strip_prefix("# ") {
+                    let title = title.trim();
+                    if !title.is_empty() {
+                        return Some(title.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Remove the first H1 heading from cells (since it becomes the notebook title).
+/// If removing the H1 leaves an empty markdown cell, drop it entirely.
+fn strip_title_from_cells(cells: &mut Vec<cells::Cell>) {
+    for i in 0..cells.len() {
+        if let cells::Cell::Markdown(text) = &cells[i] {
+            let mut found = false;
+            let new_text: Vec<&str> = text
+                .lines()
+                .filter(|line| {
+                    if !found && line.trim().starts_with("# ") {
+                        found = true;
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+            if found {
+                let joined = new_text.join("\n").trim().to_string();
+                if joined.is_empty() {
+                    cells.remove(i);
+                } else {
+                    cells[i] = cells::Cell::Markdown(joined);
+                }
+                return;
+            }
+        }
+    }
 }
 
 /// Parse a notebook ID from either a plain number or a Datadog notebook URL.
