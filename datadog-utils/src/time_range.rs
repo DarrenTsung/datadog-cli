@@ -144,12 +144,16 @@ enum TimeUnit {
     Hour,
     Day,
     Week,
+    Month,
+    Year,
 }
 
 static MINUTE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(m|(min|minute)s*)").unwrap());
 static HOUR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(h|(hr|hour)s*)").unwrap());
 static DAY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(d|days*)").unwrap());
 static WEEK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(w|weeks*)").unwrap());
+static MONTH_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(months*)").unwrap());
+static YEAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(y|(year)s*)").unwrap());
 
 impl TimeUnit {
     fn into_duration(self, count: i64) -> Duration {
@@ -158,6 +162,8 @@ impl TimeUnit {
             TimeUnit::Hour => Duration::hours(count),
             TimeUnit::Day => Duration::days(count),
             TimeUnit::Week => Duration::weeks(count),
+            TimeUnit::Month => Duration::days(count * 30),
+            TimeUnit::Year => Duration::days(count * 365),
         }
     }
 }
@@ -174,8 +180,12 @@ impl FromStr for TimeUnit {
             Ok(TimeUnit::Day)
         } else if WEEK_RE.is_match(s) {
             Ok(TimeUnit::Week)
+        } else if MONTH_RE.is_match(s) {
+            Ok(TimeUnit::Month)
+        } else if YEAR_RE.is_match(s) {
+            Ok(TimeUnit::Year)
         } else {
-            Err(anyhow!("Could not parse a valid time unit from '{}' (valid units are: mins, hours, days, weeks)", s))
+            Err(anyhow!("Could not parse a valid time unit from '{}' (valid units are: mins, hours, days, weeks, months, years)", s))
         }
     }
 }
