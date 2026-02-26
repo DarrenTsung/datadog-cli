@@ -254,21 +254,34 @@ datadog metrics query \
   --time "last 4 hours"
 ```
 
-### Before/after comparison around a deploy or change
+### Before/after comparison (ALWAYS use --compare)
 
-Use `--compare` with a pivot timestamp to see the impact of a deploy or config change.
+When comparing metrics before vs after a specific point in time (deploy, config change, incident, regression), ALWAYS use `--compare` with a pivot timestamp instead of issuing two separate queries with different `--time` ranges. This halves the number of API calls and gives you a clean before/after delta automatically.
 
 ```bash
+# GOOD: single query with --compare
 datadog metrics query \
   --query "avg:system.cpu.user{env:production}" \
   --time "2026-02-19T14:00:00Z to 2026-02-20T02:00:00Z" \
   --compare "2026-02-19T17:35:00Z"
+
+# BAD: two separate queries — DO NOT DO THIS
+datadog metrics query --query "avg:system.cpu.user{env:production}" --time "2026-02-19T14:00:00Z to 2026-02-19T17:35:00Z"
+datadog metrics query --query "avg:system.cpu.user{env:production}" --time "2026-02-19T17:35:00Z to 2026-02-20T02:00:00Z"
 
 # With hourly rollup for more detail
 datadog metrics query \
   --query "avg:system.cpu.user{env:production}" \
   --time "2026-02-19T14:00:00Z to 2026-02-20T02:00:00Z" \
   --rollup hourly --compare "2026-02-19T17:35:00Z"
+
+# Works with --formula too — compare derived metrics in one call
+datadog metrics query \
+  --query "a=count:sinatra.async_worker.jobs{env:production}.as_count()" \
+  --query "b=avg:sinatra.async_worker.jobs.execution_time_distrib{env:production}" \
+  --formula "a * b" \
+  --time "2026-02-17T00:00:00Z to 2026-02-26T00:00:00Z" \
+  --rollup daily --compare "2026-02-22T00:00:00Z"
 ```
 
 ## Examples
