@@ -1,5 +1,7 @@
 mod api;
 
+use crate::notebooks;
+
 use anyhow::{anyhow, bail, Context};
 use structopt::StructOpt;
 
@@ -398,6 +400,39 @@ fn format_widget(widget: &serde_json::Value) -> String {
     out
 }
 
+/// Format a notebook cell using the same approach as dashboard widgets.
+/// Notebook cell attributes serialize as `{ "definition": {...}, "time": ... }`
+/// which is the same shape format_widget expects.
+fn format_notebook_cell(cell_json: &serde_json::Value) {
+    let def = &cell_json["definition"];
+    let widget_type = def["type"].as_str().unwrap_or("unknown");
+
+    match widget_type {
+        "markdown" => {
+            // Markdown cells: just print the text.
+            if let Some(text) = def["text"].as_str() {
+                println!("{}", text);
+            }
+        }
+        _ => {
+            // Wrap as a widget-like object for format_widget.
+            let widget = serde_json::json!({"definition": def});
+            print!("{}", format_widget(&widget));
+
+            // Print time override if present.
+            if let Some(time) = cell_json.get("time").and_then(|t| t.as_object()) {
+                if let Some(live_span) = time.get("live_span").and_then(|v| v.as_str()) {
+                    println!("Time: {}", live_span);
+                } else if let Some(start) = time.get("start") {
+                    let end = time.get("end").and_then(|v| v.as_str()).unwrap_or("?");
+                    let start = start.as_str().unwrap_or("?");
+                    println!("Time: {} to {}", start, end);
+                }
+            }
+        }
+    }
+}
+
 fn indent(s: &str, prefix: &str) -> String {
     s.lines()
         .map(|line| format!("{}{}", prefix, line))
@@ -507,18 +542,69 @@ pub async fn run_unfurl(
             }
         }
         ResolvedUrl::Notebook { url, og_image_url } => {
-            eprintln!("Notebook: {}", url);
+            // Parse notebook ID and optional cell_id from the URL.
+            let parsed_url = url::Url::parse(&url).context("Invalid notebook URL")?;
+            let notebook_id = parsed_url
+                .path_segments()
+                .and_then(|mut s| {
+                    while let Some(seg) = s.next() {
+                        if seg == "notebook" {
+                            return s.next();
+                        }
+                    }
+                    None
+                })
+                .and_then(|id| id.parse::<i64>().ok());
+            let cell_id: Option<String> = parsed_url
+                .query_pairs()
+                .find(|(k, _)| k == "cell_id")
+                .map(|(_, v)| v.to_string());
+
+            if let Some(nb_id) = notebook_id {
+                match notebooks::api::get_notebook(api_key, app_key, nb_id).await {
+                    Ok(response) => {
+                        if let Some(data) = response.data {
+                            eprintln!("Notebook: {}", data.attributes.name);
+
+                            let target_cells: Vec<_> = if let Some(ref cid) = cell_id {
+                                data.attributes.cells.iter().filter(|c| &c.id == cid).collect()
+                            } else {
+                                data.attributes.cells.iter().collect()
+                            };
+
+                            if target_cells.is_empty() {
+                                if let Some(ref cid) = cell_id {
+                                    eprintln!("Cell {} not found in notebook", cid);
+                                }
+                            }
+
+                            for cell in &target_cells {
+                                // Serialize cell attributes to JSON and use format_widget
+                                // for the same output format as dashboard widgets.
+                                let cell_json = serde_json::to_value(&cell.attributes).unwrap_or_default();
+                                if opt.json {
+                                    println!("{}", serde_json::to_string_pretty(&cell_json)?);
+                                } else {
+                                    format_notebook_cell(&cell_json);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("Failed to fetch notebook: {}", e),
+                }
+            } else {
+                eprintln!("Notebook: {}", url);
+            }
 
             if let Some(image_url) = &og_image_url {
                 let path = "/tmp/dd-notebook-snapshot.png";
                 match download_to_file(image_url, path).await {
                     Ok(()) => {
                         eprintln!("Snapshot: {}", path);
+                        eprintln!("(Tip: the snapshot may include cursor annotations — timestamp and count — not shown above)");
                     }
                     Err(e) => eprintln!("Failed to download snapshot: {}", e),
                 }
-            } else {
-                eprintln!("(no snapshot image found)");
             }
         }
     }
