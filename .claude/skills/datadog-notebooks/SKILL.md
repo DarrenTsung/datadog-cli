@@ -163,6 +163,58 @@ The `--time` CLI flag sets the notebook's global time span (default: `1h`). Indi
 | `2d`  | Past 2 days      |
 | `1w`  | Past 1 week      |
 
+## Section links
+
+You can write `[text](#heading-slug)` links in your markdown to create cross-references between sections. These use GitHub-style heading slugs (lowercase, hyphens for spaces/punctuation).
+
+**Important**: The Datadog API does not support `#slug` anchor navigation natively. After creating/updating a notebook, the user runs a **bookmarklet** (`dd-notebook-enhance.js`) that resolves these links into working `?cell_id=` URLs using ProseMirror's internal heading IDs.
+
+When writing section links, validate that every `#slug` target matches a heading that actually exists in the document. Warn the user if a link points to a non-existent heading.
+
+## Annotations
+
+You can define graph annotations in an `## Annotations` section at the end of the notebook. Each line defines a point-in-time marker that appears on all timeseries graphs.
+
+Format:
+
+```
+## Annotations
+- YYYY-MM-DD HH:MM UTC | color | Description text
+```
+
+Example:
+
+```markdown
+## Annotations
+- 2026-02-05 13:00 UTC | red | Regression onset — latency spike begins
+- 2026-02-06 09:00 UTC | gray | Deploy abc123 — cache layer update
+- 2026-02-07 15:30 UTC | green | Recovery — metrics back to baseline
+```
+
+Available colors: `red`, `yellow`, `green`, `blue`, `purple`, `pink`, `orange`, `gray`
+
+**Important**: Annotations are not created by the CLI. They are created by the bookmarklet (`dd-notebook-enhance.js`) which the user runs in their browser after creating/updating the notebook. The bookmarklet uses Datadog's internal `/api/ui/annotation` endpoint. It is idempotent — existing annotations (matched by timestamp + description) are skipped.
+
+When writing the annotations section, make sure the timestamps fall within the time range of the notebook's metric/log query cells so the annotations are visible on the graphs.
+
+## Bookmarklet
+
+The file `datadog/src/notebooks/dd-notebook-enhance.js` is a browser bookmarklet that the user runs after creating/updating a notebook. It:
+
+1. **Resolves section links** — finds `[text](#slug)` links and replaces them with working `?cell_id=` URLs using ProseMirror heading IDs
+2. **Creates annotations** — reads the `## Annotations` section and POSTs each annotation to Datadog's internal API
+
+To generate the bookmarklet from the source file:
+
+```bash
+npx terser datadog/src/notebooks/dd-notebook-enhance.js --compress --mangle \
+  | tr -d '\n' | sed 's/;$//' \
+  | { echo -n 'javascript:void('; cat; echo -n ')'; } \
+  | pbcopy
+```
+
+Then create a Chrome bookmark and paste the clipboard as the URL.
+
 ## Rules
 
 - Empty or whitespace-only markdown between special blocks is dropped (no empty cells)
@@ -172,3 +224,4 @@ The `--time` CLI flag sets the notebook's global time span (default: `1h`). Indi
 - Unterminated ` ```log-query ` or ` ```metric-query ` blocks produce an error
 - Invalid JSON inside a special block produces an error
 - The `query` field is required in both log-query and metric-query JSON; missing it is an error
+- Section links (`[text](#slug)`) must reference a heading that exists in the document — warn if a link target has no matching heading

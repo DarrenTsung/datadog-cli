@@ -373,6 +373,10 @@ pub async fn run_notebooks(
                 return Err(anyhow!("No cells parsed from {file}"));
             }
             strip_title_from_cells(&mut cells);
+            let broken = parser::validate_section_links(&cells);
+            for slug in &broken {
+                eprintln!("Warning: section link #{slug} does not match any heading");
+            }
             let response =
                 api::create_notebook(api_key, app_key, &title, &cells, live_span).await?;
             if let Some(data) = response.data {
@@ -396,6 +400,11 @@ pub async fn run_notebooks(
                 return Err(anyhow!("No cells parsed from {file}"));
             }
             eprintln!("[{:.2}s] parsed {} cells", t0.elapsed().as_secs_f64(), cells.len());
+
+            let broken = parser::validate_section_links(&cells);
+            for slug in &broken {
+                eprintln!("Warning: section link #{slug} does not match any heading");
+            }
 
             let title = match title {
                 Some(t) => t,

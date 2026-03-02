@@ -101,6 +101,86 @@ pub fn parse_markdown(input: &str) -> anyhow::Result<Vec<Cell>> {
     Ok(cells)
 }
 
+/// Validate that all `[text](#slug)` section links point to a heading that
+/// exists in the document. Returns a list of broken link slugs.
+pub fn validate_section_links(cells: &[Cell]) -> Vec<String> {
+    // Collect all heading slugs
+    let mut heading_slugs = std::collections::HashSet::new();
+    for cell in cells {
+        if let Cell::Markdown(text) = cell {
+            for line in text.lines() {
+                let trimmed = line.trim();
+                let hash_count = trimmed.bytes().take_while(|&b| b == b'#').count();
+                if hash_count >= 1
+                    && hash_count <= 6
+                    && trimmed.as_bytes().get(hash_count) == Some(&b' ')
+                {
+                    let heading = trimmed[hash_count..].trim();
+                    if !heading.is_empty() {
+                        let slug = slugify(heading);
+                        heading_slugs.insert(slug);
+                    }
+                }
+            }
+        }
+    }
+
+    // Find all link targets and check against headings
+    let mut broken = Vec::new();
+    for cell in cells {
+        if let Cell::Markdown(text) = cell {
+            // Find ](#slug) patterns
+            let mut rest = text.as_str();
+            while let Some(pos) = rest.find("](#") {
+                let after = &rest[pos + 3..];
+                if let Some(end) = after.find(')') {
+                    let slug = &after[..end];
+                    let normalized = slug.replace(|c: char| !c.is_alphanumeric() && c != '-', "-")
+                        .to_lowercase();
+                    let normalized = normalized.trim_matches('-');
+                    let collapsed = collapsed_hyphens(&normalized);
+                    if !heading_slugs.contains(&collapsed) {
+                        broken.push(slug.to_string());
+                    }
+                    rest = &after[end..];
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    broken
+}
+
+fn slugify(heading: &str) -> String {
+    let raw: String = heading
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    collapsed_hyphens(&raw)
+}
+
+fn collapsed_hyphens(s: &str) -> String {
+    let mut result = String::new();
+    let mut prev_dash = true;
+    for c in s.chars() {
+        if c == '-' {
+            if !prev_dash {
+                result.push('-');
+                prev_dash = true;
+            }
+        } else {
+            result.push(c);
+            prev_dash = false;
+        }
+    }
+    if result.ends_with('-') {
+        result.pop();
+    }
+    result
+}
+
 /// If `buffer` contains non-whitespace content, push it as a `Cell::Markdown`
 /// and clear the buffer. Leading/trailing blank lines are stripped.
 fn flush_markdown(buffer: &mut String, cells: &mut Vec<Cell>) {
@@ -403,4 +483,34 @@ mod tests {
         );
     }
 
+    // -- validate_section_links --
+
+    #[test]
+    fn validate_links_all_valid() {
+        let cells = vec![
+            Cell::Markdown("## Intro\n[go](#details)".to_string()),
+            Cell::Markdown("## Details\ntext".to_string()),
+        ];
+        assert!(validate_section_links(&cells).is_empty());
+    }
+
+    #[test]
+    fn validate_links_broken() {
+        let cells = vec![
+            Cell::Markdown("## Intro\n[go](#nonexistent)\n[also](#details)".to_string()),
+            Cell::Markdown("## Details\ntext".to_string()),
+        ];
+        let broken = validate_section_links(&cells);
+        assert_eq!(broken, vec!["nonexistent"]);
+    }
+
+    #[test]
+    fn validate_links_normalizes_hyphens() {
+        // Link has multiple hyphens, heading slug has single — should match
+        let cells = vec![
+            Cell::Markdown("[go](#regression-onset----wed-feb-18)".to_string()),
+            Cell::Markdown("## Regression Onset — Wed Feb 18\ntext".to_string()),
+        ];
+        assert!(validate_section_links(&cells).is_empty());
+    }
 }
