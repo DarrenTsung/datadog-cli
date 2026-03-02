@@ -61,6 +61,84 @@ OPTIONS:
 ```
 
 
+## Notebooks
+
+Create and update Datadog notebooks from markdown files. Write prose, log queries, metric queries, section links, and annotations — all in a single `.md` file.
+
+### Quick start
+
+```bash
+# Create a notebook from markdown
+datadog notebooks create --file investigation.md --title "Latency Investigation"
+
+# Update an existing notebook
+datadog notebooks update --id 12345 --file investigation.md
+
+# Read a notebook back as markdown
+datadog notebooks read --id 12345
+```
+
+### Markdown format
+
+Regular markdown becomes prose cells. Fenced code blocks tagged ` ```log-query ` or ` ```metric-query ` become interactive widgets:
+
+````markdown
+# Latency Investigation
+
+We noticed a spike starting Feb 5.
+
+## Error logs
+
+```log-query
+{"query": "service:api status:error env:production", "time": "4h"}
+```
+
+## CPU during the incident
+
+```metric-query
+{"query": "avg:system.cpu.user{service:api}", "time": {"start": "2026-02-05T00:00:00Z", "end": "2026-02-07T00:00:00Z"}, "title": "API CPU"}
+```
+
+## Summary
+
+See [Error logs](#error-logs) for details.
+````
+
+### Section links
+
+Use `[text](#heading-slug)` to link between sections. The CLI validates that all link targets match an existing heading. After creating the notebook, run the **DD Notebook Enhance** bookmarklet in your browser to resolve these into working Datadog `?cell_id=` URLs.
+
+### Annotations
+
+Add an `## Annotations` section to define point-in-time markers on all graphs:
+
+```markdown
+## Annotations
+- 2026-02-05 13:00 UTC | red | Regression onset — latency spike
+- 2026-02-06 09:00 UTC | gray | Deploy abc123
+- 2026-02-07 15:30 UTC | green | Recovery — back to baseline
+```
+
+Colors: `red`, `yellow`, `green`, `blue`, `purple`, `pink`, `orange`, `gray`
+
+Annotations are created by the bookmarklet (not the CLI) using Datadog's internal annotation API. They are idempotent — running the bookmarklet again skips existing annotations.
+
+### Bookmarklet setup
+
+The file `datadog/src/notebooks/dd-notebook-enhance.js` is a browser bookmarklet that resolves section links and creates annotations. To install:
+
+1. Generate the bookmarklet:
+   ```bash
+   npx terser datadog/src/notebooks/dd-notebook-enhance.js --compress --mangle \
+     | tr -d '\n' | sed 's/;$//' \
+     | { echo -n 'javascript:void('; cat; echo -n ')'; } \
+     | pbcopy
+   ```
+2. Create a Chrome bookmark named **DD Notebook Enhance**
+3. Paste the clipboard as the bookmark URL
+
+**Workflow**: create/update notebook via CLI, open it in the browser, click the bookmarklet.
+
 ## How to get a Datadog API and APP Key
 
 Find an existing API Key here: https://app.datadoghq.com/organization-settings/api-keys (You can use an arbitrary one, make sure to copy the Key and not the ID)
