@@ -1,16 +1,15 @@
 use chrono::{DateTime, Utc};
 use datadog_api_client::datadogV1::model::{
-    FormulaAndFunctionEventAggregation, FormulaAndFunctionEventQueryDefinition,
-    FormulaAndFunctionEventQueryDefinitionCompute, FormulaAndFunctionEventQueryDefinitionSearch,
-    FormulaAndFunctionEventQueryGroupBy, FormulaAndFunctionEventsDataSource,
-    FormulaAndFunctionQueryDefinition, LogStreamWidgetDefinition, LogStreamWidgetDefinitionType,
-    NotebookAbsoluteTime, NotebookCellCreateRequest, NotebookCellCreateRequestAttributes,
-    NotebookCellResourceType, NotebookCellResponseAttributes, NotebookCellTime,
-    NotebookCellUpdateRequestAttributes, NotebookLogStreamCellAttributes,
-    NotebookMarkdownCellAttributes, NotebookMarkdownCellDefinition,
-    NotebookMarkdownCellDefinitionType, NotebookRelativeTime, NotebookTimeseriesCellAttributes,
-    TimeseriesWidgetDefinition, TimeseriesWidgetDefinitionType, TimeseriesWidgetExpressionAlias,
-    TimeseriesWidgetRequest, WidgetDisplayType, WidgetFormula, WidgetLiveSpan,
+    FormulaAndFunctionQueryDefinition, LogQueryDefinition, LogQueryDefinitionGroupBy,
+    LogQueryDefinitionSearch, LogStreamWidgetDefinition, LogStreamWidgetDefinitionType,
+    LogsQueryCompute, NotebookAbsoluteTime, NotebookCellCreateRequest,
+    NotebookCellCreateRequestAttributes, NotebookCellResourceType,
+    NotebookCellResponseAttributes, NotebookCellTime, NotebookCellUpdateRequestAttributes,
+    NotebookLogStreamCellAttributes, NotebookMarkdownCellAttributes,
+    NotebookMarkdownCellDefinition, NotebookMarkdownCellDefinitionType, NotebookRelativeTime,
+    NotebookTimeseriesCellAttributes, TimeseriesWidgetDefinition,
+    TimeseriesWidgetDefinitionType, TimeseriesWidgetExpressionAlias, TimeseriesWidgetRequest,
+    WidgetDisplayType, WidgetLiveSpan,
 };
 use serde_derive::Deserialize;
 
@@ -87,36 +86,50 @@ fn cell_time_to_notebook_cell_time(ct: &CellTime) -> NotebookCellTime {
     }
 }
 
-fn parse_event_aggregation(s: &str) -> FormulaAndFunctionEventAggregation {
-    match s.to_lowercase().as_str() {
-        "count" => FormulaAndFunctionEventAggregation::COUNT,
-        "avg" => FormulaAndFunctionEventAggregation::AVG,
-        "sum" => FormulaAndFunctionEventAggregation::SUM,
-        "min" => FormulaAndFunctionEventAggregation::MIN,
-        "max" => FormulaAndFunctionEventAggregation::MAX,
-        "median" => FormulaAndFunctionEventAggregation::MEDIAN,
-        "pc75" => FormulaAndFunctionEventAggregation::PC75,
-        "pc90" => FormulaAndFunctionEventAggregation::PC90,
-        "pc95" => FormulaAndFunctionEventAggregation::PC95,
-        "pc98" => FormulaAndFunctionEventAggregation::PC98,
-        "pc99" => FormulaAndFunctionEventAggregation::PC99,
-        "cardinality" => FormulaAndFunctionEventAggregation::CARDINALITY,
-        _ => FormulaAndFunctionEventAggregation::COUNT,
+/// Build a `LogQueryDefinition` from an `EventQueryCell`.
+fn build_event_log_query(eq: &EventQueryCell) -> LogQueryDefinition {
+    let mut compute = LogsQueryCompute::new(eq.compute.clone());
+    if let Some(ref m) = eq.metric {
+        compute = compute.facet(m.clone());
     }
+
+    let mut def = LogQueryDefinition::new()
+        .compute(compute)
+        .search(LogQueryDefinitionSearch::new(eq.search.clone()));
+
+    if let Some(ref groups) = eq.group_by {
+        let sdk_groups: Vec<LogQueryDefinitionGroupBy> = groups
+            .iter()
+            .map(|g| {
+                let mut gb = LogQueryDefinitionGroupBy::new(g.facet.clone());
+                if let Some(limit) = g.limit {
+                    gb = gb.limit(limit);
+                }
+                gb
+            })
+            .collect();
+        def = def.group_by(sdk_groups);
+    }
+
+    def
 }
 
-fn parse_events_data_source(s: &str) -> FormulaAndFunctionEventsDataSource {
-    match s.to_lowercase().as_str() {
-        "events" => FormulaAndFunctionEventsDataSource::EVENTS,
-        "logs" => FormulaAndFunctionEventsDataSource::LOGS,
-        "rum" => FormulaAndFunctionEventsDataSource::RUM,
-        "spans" => FormulaAndFunctionEventsDataSource::SPANS,
-        "security_signals" => FormulaAndFunctionEventsDataSource::SECURITY_SIGNALS,
-        "profiles" => FormulaAndFunctionEventsDataSource::PROFILES,
-        "audit" => FormulaAndFunctionEventsDataSource::AUDIT,
-        "ci_tests" => FormulaAndFunctionEventsDataSource::CI_TESTS,
-        "ci_pipelines" => FormulaAndFunctionEventsDataSource::CI_PIPELINES,
-        _ => FormulaAndFunctionEventsDataSource::EVENTS,
+/// Map a data_source string to the appropriate setter on `TimeseriesWidgetRequest`.
+fn set_data_source_query(
+    request: TimeseriesWidgetRequest,
+    data_source: &str,
+    query: LogQueryDefinition,
+) -> TimeseriesWidgetRequest {
+    match data_source.to_lowercase().as_str() {
+        "logs" => request.log_query(query),
+        "rum" => request.rum_query(query),
+        "security_signals" => request.security_query(query),
+        "audit" => request.audit_query(query),
+        "profiles" => request.profile_metrics_query(query),
+        "network" => request.network_query(query),
+        "apm" | "spans" => request.apm_query(query),
+        // "events" and anything else
+        _ => request.event_query(query),
     }
 }
 
@@ -190,41 +203,13 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
             NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(Box::new(attrs))
         }
         Cell::EventQuery(eq) => {
-            let aggregation = parse_event_aggregation(&eq.compute);
-            let data_source = parse_events_data_source(&eq.data_source);
+            let log_query = build_event_log_query(eq);
 
-            let mut compute = FormulaAndFunctionEventQueryDefinitionCompute::new(aggregation);
-            if let Some(ref m) = eq.metric {
-                compute = compute.metric(m.clone());
-            }
-
-            let mut event_query =
-                FormulaAndFunctionEventQueryDefinition::new(compute, data_source, "a".to_string())
-                    .search(FormulaAndFunctionEventQueryDefinitionSearch::new(
-                        eq.search.clone(),
-                    ));
-
-            if let Some(ref groups) = eq.group_by {
-                let sdk_groups: Vec<FormulaAndFunctionEventQueryGroupBy> = groups
-                    .iter()
-                    .map(|g| {
-                        let mut gb = FormulaAndFunctionEventQueryGroupBy::new(g.facet.clone());
-                        if let Some(limit) = g.limit {
-                            gb = gb.limit(limit);
-                        }
-                        gb
-                    })
-                    .collect();
-                event_query = event_query.group_by(sdk_groups);
-            }
-
-            let mut request = TimeseriesWidgetRequest::new()
-                .queries(vec![
-                    FormulaAndFunctionQueryDefinition::FormulaAndFunctionEventQueryDefinition(
-                        Box::new(event_query),
-                    ),
-                ])
-                .formulas(vec![WidgetFormula::new("a".to_string())]);
+            let mut request = set_data_source_query(
+                TimeseriesWidgetRequest::new(),
+                &eq.data_source,
+                log_query,
+            );
 
             if let Some(ref dt) = eq.display_type {
                 request.display_type = Some(match dt.to_lowercase().as_str() {
@@ -317,70 +302,80 @@ fn extract_metric_query_from_queries(req: &TimeseriesWidgetRequest) -> Option<St
 }
 
 /// Try to extract an event-query JSON object from a timeseries cell. Returns
-/// `Some(map)` when the first request uses a `FormulaAndFunctionEventQueryDefinition`.
+/// `Some(map)` when the first request uses one of the data-source-specific
+/// query fields (`event_query`, `log_query`, `rum_query`, etc.).
 fn extract_event_query_json(
     ts: &NotebookTimeseriesCellAttributes,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
     let req = ts.definition.requests.first()?;
-    let queries = req.queries.as_ref()?;
-    for q in queries {
-        if let FormulaAndFunctionQueryDefinition::FormulaAndFunctionEventQueryDefinition(def) = q {
-            let mut obj = serde_json::Map::new();
+
+    // Check each data-source-specific field and map to a data_source string.
+    let candidates: [(&str, &Option<LogQueryDefinition>); 8] = [
+        ("events", &req.event_query),
+        ("logs", &req.log_query),
+        ("rum", &req.rum_query),
+        ("security_signals", &req.security_query),
+        ("audit", &req.audit_query),
+        ("profiles", &req.profile_metrics_query),
+        ("network", &req.network_query),
+        ("apm", &req.apm_query),
+    ];
+    let (data_source, def) = candidates
+        .iter()
+        .find_map(|(ds, field)| field.as_ref().map(|d| (ds, d)))?;
+
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "data_source".into(),
+        serde_json::Value::String(data_source.to_string()),
+    );
+    if let Some(ref search) = def.search {
+        obj.insert(
+            "search".into(),
+            serde_json::Value::String(search.query.clone()),
+        );
+    }
+    if let Some(ref compute) = def.compute {
+        obj.insert(
+            "compute".into(),
+            serde_json::Value::String(compute.aggregation.clone()),
+        );
+        if let Some(ref facet) = compute.facet {
             obj.insert(
-                "data_source".into(),
-                serde_json::Value::String(def.data_source.to_string()),
+                "metric".into(),
+                serde_json::Value::String(facet.clone()),
             );
-            obj.insert(
-                "search".into(),
-                serde_json::Value::String(
-                    def.search
-                        .as_ref()
-                        .map(|s| s.query.clone())
-                        .unwrap_or_default(),
-                ),
-            );
-            obj.insert(
-                "compute".into(),
-                serde_json::Value::String(def.compute.aggregation.to_string()),
-            );
-            if let Some(ref metric) = def.compute.metric {
-                obj.insert(
-                    "metric".into(),
-                    serde_json::Value::String(metric.clone()),
-                );
-            }
-            if let Some(ref groups) = def.group_by {
-                let arr: Vec<serde_json::Value> = groups
-                    .iter()
-                    .map(|g| {
-                        let mut m = serde_json::Map::new();
-                        m.insert(
-                            "facet".into(),
-                            serde_json::Value::String(g.facet.clone()),
-                        );
-                        if let Some(limit) = g.limit {
-                            m.insert(
-                                "limit".into(),
-                                serde_json::Value::Number(serde_json::Number::from(limit)),
-                            );
-                        }
-                        serde_json::Value::Object(m)
-                    })
-                    .collect();
-                if !arr.is_empty() {
-                    obj.insert("group_by".into(), serde_json::Value::Array(arr));
-                }
-            }
-            if let Some(ref dt) = req.display_type {
-                obj.insert(
-                    "display_type".into(),
-                    serde_json::Value::String(dt.to_string()),
-                );
-            }
-            return Some(obj);
         }
     }
-    None
+    if let Some(ref groups) = def.group_by {
+        let arr: Vec<serde_json::Value> = groups
+            .iter()
+            .map(|g| {
+                let mut m = serde_json::Map::new();
+                m.insert(
+                    "facet".into(),
+                    serde_json::Value::String(g.facet.clone()),
+                );
+                if let Some(limit) = g.limit {
+                    m.insert(
+                        "limit".into(),
+                        serde_json::Value::Number(serde_json::Number::from(limit)),
+                    );
+                }
+                serde_json::Value::Object(m)
+            })
+            .collect();
+        if !arr.is_empty() {
+            obj.insert("group_by".into(), serde_json::Value::Array(arr));
+        }
+    }
+    if let Some(ref dt) = req.display_type {
+        obj.insert(
+            "display_type".into(),
+            serde_json::Value::String(dt.to_string()),
+        );
+    }
+    Some(obj)
 }
 
 /// Convert a notebook cell response back to the markdown format the parser
@@ -716,10 +711,10 @@ mod tests {
             NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(attrs) => {
                 assert_eq!(attrs.definition.requests.len(), 1);
                 let req = &attrs.definition.requests[0];
-                // Should use queries/formulas, not q
+                // Should use event_query, not q or queries/formulas
                 assert!(req.q.is_none());
-                assert!(req.queries.is_some());
-                assert!(req.formulas.is_some());
+                assert!(req.queries.is_none());
+                assert!(req.event_query.is_some());
                 assert_eq!(attrs.definition.title.as_deref(), Some("Deploy Events"));
             }
             _ => panic!("Expected NotebookTimeseriesCellAttributes"),
@@ -747,23 +742,14 @@ mod tests {
             NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(attrs) => {
                 let req = &attrs.definition.requests[0];
                 assert_eq!(req.display_type, Some(WidgetDisplayType::BARS));
-                // Verify the query definition
-                let queries = req.queries.as_ref().unwrap();
-                assert_eq!(queries.len(), 1);
-                match &queries[0] {
-                    FormulaAndFunctionQueryDefinition::FormulaAndFunctionEventQueryDefinition(
-                        def,
-                    ) => {
-                        assert_eq!(def.name, "a");
-                        assert_eq!(def.compute.metric.as_deref(), Some("@duration"));
-                        assert!(def.group_by.is_some());
-                        let groups = def.group_by.as_ref().unwrap();
-                        assert_eq!(groups.len(), 1);
-                        assert_eq!(groups[0].facet, "service");
-                        assert_eq!(groups[0].limit, Some(10));
-                    }
-                    _ => panic!("Expected FormulaAndFunctionEventQueryDefinition"),
-                }
+                let def = req.event_query.as_ref().unwrap();
+                let compute = def.compute.as_ref().unwrap();
+                assert_eq!(compute.aggregation, "avg");
+                assert_eq!(compute.facet.as_deref(), Some("@duration"));
+                let groups = def.group_by.as_ref().unwrap();
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0].facet, "service");
+                assert_eq!(groups[0].limit, Some(10));
                 // Verify time
                 match &attrs.time {
                     Some(Some(NotebookCellTime::NotebookRelativeTime(rt))) => {
@@ -849,25 +835,11 @@ mod tests {
 
     #[test]
     fn reverse_event_query_cell() {
-        let compute = FormulaAndFunctionEventQueryDefinitionCompute::new(
-            FormulaAndFunctionEventAggregation::COUNT,
-        );
-        let event_query = FormulaAndFunctionEventQueryDefinition::new(
-            compute,
-            FormulaAndFunctionEventsDataSource::EVENTS,
-            "a".to_string(),
-        )
-        .search(FormulaAndFunctionEventQueryDefinitionSearch::new(
-            "source:deploy".to_string(),
-        ));
+        let event_def = LogQueryDefinition::new()
+            .compute(LogsQueryCompute::new("count".to_string()))
+            .search(LogQueryDefinitionSearch::new("source:deploy".to_string()));
 
-        let request = TimeseriesWidgetRequest::new()
-            .queries(vec![
-                FormulaAndFunctionQueryDefinition::FormulaAndFunctionEventQueryDefinition(
-                    Box::new(event_query),
-                ),
-            ])
-            .formulas(vec![WidgetFormula::new("a".to_string())]);
+        let request = TimeseriesWidgetRequest::new().event_query(event_def);
 
         let mut def = TimeseriesWidgetDefinition::new(
             vec![request],
@@ -889,29 +861,14 @@ mod tests {
 
     #[test]
     fn reverse_event_query_cell_with_group_by() {
-        let compute = FormulaAndFunctionEventQueryDefinitionCompute::new(
-            FormulaAndFunctionEventAggregation::AVG,
-        )
-        .metric("@duration".to_string());
-        let event_query = FormulaAndFunctionEventQueryDefinition::new(
-            compute,
-            FormulaAndFunctionEventsDataSource::EVENTS,
-            "a".to_string(),
-        )
-        .search(FormulaAndFunctionEventQueryDefinitionSearch::new(
-            "source:deploy".to_string(),
-        ))
-        .group_by(vec![
-            FormulaAndFunctionEventQueryGroupBy::new("service".to_string()).limit(10),
-        ]);
+        let event_def = LogQueryDefinition::new()
+            .compute(LogsQueryCompute::new("avg".to_string()).facet("@duration".to_string()))
+            .search(LogQueryDefinitionSearch::new("source:deploy".to_string()))
+            .group_by(vec![
+                LogQueryDefinitionGroupBy::new("service".to_string()).limit(10),
+            ]);
 
-        let request = TimeseriesWidgetRequest::new()
-            .queries(vec![
-                FormulaAndFunctionQueryDefinition::FormulaAndFunctionEventQueryDefinition(
-                    Box::new(event_query),
-                ),
-            ])
-            .formulas(vec![WidgetFormula::new("a".to_string())]);
+        let request = TimeseriesWidgetRequest::new().event_query(event_def);
 
         let def = TimeseriesWidgetDefinition::new(
             vec![request],
