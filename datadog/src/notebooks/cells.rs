@@ -211,13 +211,16 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
                 log_query,
             );
 
-            if let Some(ref dt) = eq.display_type {
-                request.display_type = Some(match dt.to_lowercase().as_str() {
-                    "bars" | "bar" => WidgetDisplayType::BARS,
+            request.display_type = Some(match eq.display_type.as_deref() {
+                Some(dt) => match dt.to_lowercase().as_str() {
+                    "line" => WidgetDisplayType::LINE,
                     "area" => WidgetDisplayType::AREA,
-                    _ => WidgetDisplayType::LINE,
-                });
-            }
+                    _ => WidgetDisplayType::BARS,
+                },
+                // Default to bars — event data (especially counts) reads
+                // better as a bar chart than a line.
+                None => WidgetDisplayType::BARS,
+            });
 
             let mut definition = TimeseriesWidgetDefinition::new(
                 vec![request],
