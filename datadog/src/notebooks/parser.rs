@@ -1,6 +1,6 @@
 use anyhow::{bail, Context};
 
-use super::cells::{Cell, LogQueryCell, MetricQueryCell};
+use super::cells::{Cell, EventQueryCell, LogQueryCell, MetricQueryCell};
 
 #[derive(Debug)]
 enum State {
@@ -8,6 +8,7 @@ enum State {
     InRegularFence,
     InLogQuery,
     InMetricQuery,
+    InEventQuery,
 }
 
 /// Parse a markdown document into a sequence of notebook cells.
@@ -36,6 +37,12 @@ pub fn parse_markdown(input: &str) -> anyhow::Result<Vec<Cell>> {
                 }) {
                     flush_markdown(&mut buffer, &mut cells);
                     state = State::InMetricQuery;
+                } else if trimmed.strip_prefix("```").is_some_and(|rest| {
+                    let tag = rest.trim();
+                    tag.eq_ignore_ascii_case("event-query")
+                }) {
+                    flush_markdown(&mut buffer, &mut cells);
+                    state = State::InEventQuery;
                 } else if trimmed.starts_with("```") && trimmed.len() > 3 {
                     // Opening a regular fenced code block (e.g. ```python).
                     buffer.push_str(line);
@@ -83,12 +90,28 @@ pub fn parse_markdown(input: &str) -> anyhow::Result<Vec<Cell>> {
                     buffer.push('\n');
                 }
             }
+            State::InEventQuery => {
+                if trimmed == "```" {
+                    let json_str = buffer.trim();
+                    let event_query: EventQueryCell = serde_json::from_str(json_str)
+                        .with_context(|| {
+                            format!("Invalid JSON in event-query block: {json_str}")
+                        })?;
+                    cells.push(Cell::EventQuery(event_query));
+                    buffer.clear();
+                    state = State::Normal;
+                } else {
+                    buffer.push_str(line);
+                    buffer.push('\n');
+                }
+            }
         }
     }
 
     match state {
         State::InLogQuery => bail!("Unterminated log-query code block"),
         State::InMetricQuery => bail!("Unterminated metric-query code block"),
+        State::InEventQuery => bail!("Unterminated event-query code block"),
         State::InRegularFence => {
             // Unterminated regular fence — just treat everything as markdown.
             flush_markdown(&mut buffer, &mut cells);
@@ -478,6 +501,88 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("Invalid JSON in metric-query block"),
+            "{}",
+            err
+        );
+    }
+
+    // -- event-query parsing --
+
+    #[test]
+    fn single_event_query() {
+        let input = "```event-query\n{\"data_source\":\"events\",\"search\":\"source:deploy\",\"compute\":\"count\"}\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(
+            cells,
+            vec![Cell::EventQuery(cells::EventQueryCell {
+                data_source: "events".to_string(),
+                search: "source:deploy".to_string(),
+                compute: "count".to_string(),
+                metric: None,
+                group_by: None,
+                title: None,
+                display_type: None,
+                time: None,
+            })]
+        );
+    }
+
+    #[test]
+    fn event_query_with_all_fields() {
+        let input = r#"```event-query
+{"data_source":"events","search":"source:deploy","compute":"avg","metric":"@duration","group_by":[{"facet":"service","limit":10}],"title":"Deploy Duration","display_type":"bars","time":"4h"}
+```"#;
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(
+            cells,
+            vec![Cell::EventQuery(cells::EventQueryCell {
+                data_source: "events".to_string(),
+                search: "source:deploy".to_string(),
+                compute: "avg".to_string(),
+                metric: Some("@duration".to_string()),
+                group_by: Some(vec![cells::EventQueryGroupBy {
+                    facet: "service".to_string(),
+                    limit: Some(10),
+                }]),
+                title: Some("Deploy Duration".to_string()),
+                display_type: Some("bars".to_string()),
+                time: Some(cells::CellTime::Relative("4h".to_string())),
+            })]
+        );
+    }
+
+    #[test]
+    fn mixed_all_query_types() {
+        let input = "# Title\n\n```log-query\n{\"query\":\"env:prod\"}\n```\n\n```metric-query\n{\"query\":\"avg:system.cpu.user{*}\"}\n```\n\n```event-query\n{\"data_source\":\"events\",\"search\":\"source:deploy\",\"compute\":\"count\"}\n```";
+        let cells = parse_markdown(input).unwrap();
+        assert_eq!(cells.len(), 4);
+        assert!(matches!(&cells[0], Cell::Markdown(_)));
+        assert!(matches!(&cells[1], Cell::LogQuery(_)));
+        assert!(matches!(&cells[2], Cell::MetricQuery(_)));
+        assert!(matches!(&cells[3], Cell::EventQuery(_)));
+    }
+
+    #[test]
+    fn unterminated_event_query_block() {
+        let input = "```event-query\n{\"data_source\":\"events\",\"search\":\"x\",\"compute\":\"count\"}";
+        let result = parse_markdown(input);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Unterminated event-query code block"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn invalid_json_in_event_query() {
+        let input = "```event-query\nnot json\n```";
+        let result = parse_markdown(input);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Invalid JSON in event-query block"),
             "{}",
             err
         );

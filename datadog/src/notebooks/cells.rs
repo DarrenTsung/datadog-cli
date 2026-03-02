@@ -1,5 +1,8 @@
 use chrono::{DateTime, Utc};
 use datadog_api_client::datadogV1::model::{
+    FormulaAndFunctionEventAggregation, FormulaAndFunctionEventQueryDefinition,
+    FormulaAndFunctionEventQueryDefinitionCompute, FormulaAndFunctionEventQueryDefinitionSearch,
+    FormulaAndFunctionEventQueryGroupBy, FormulaAndFunctionEventsDataSource,
     FormulaAndFunctionQueryDefinition, LogStreamWidgetDefinition, LogStreamWidgetDefinitionType,
     NotebookAbsoluteTime, NotebookCellCreateRequest, NotebookCellCreateRequestAttributes,
     NotebookCellResourceType, NotebookCellResponseAttributes, NotebookCellTime,
@@ -7,7 +10,7 @@ use datadog_api_client::datadogV1::model::{
     NotebookMarkdownCellAttributes, NotebookMarkdownCellDefinition,
     NotebookMarkdownCellDefinitionType, NotebookRelativeTime, NotebookTimeseriesCellAttributes,
     TimeseriesWidgetDefinition, TimeseriesWidgetDefinitionType, TimeseriesWidgetExpressionAlias,
-    TimeseriesWidgetRequest, WidgetDisplayType, WidgetLiveSpan,
+    TimeseriesWidgetRequest, WidgetDisplayType, WidgetFormula, WidgetLiveSpan,
 };
 use serde_derive::Deserialize;
 
@@ -18,6 +21,7 @@ pub enum Cell {
     Markdown(String),
     LogQuery(LogQueryCell),
     MetricQuery(MetricQueryCell),
+    EventQuery(EventQueryCell),
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -42,6 +46,24 @@ pub struct MetricQueryCell {
     pub display_type: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct EventQueryCell {
+    pub data_source: String,
+    pub search: String,
+    pub compute: String,
+    pub metric: Option<String>,
+    pub group_by: Option<Vec<EventQueryGroupBy>>,
+    pub title: Option<String>,
+    pub display_type: Option<String>,
+    pub time: Option<CellTime>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct EventQueryGroupBy {
+    pub facet: String,
+    pub limit: Option<i64>,
+}
+
 /// Per-cell time override. Either a relative span string like `"4h"` or an
 /// absolute range object like `{"start": "...", "end": "..."}`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -62,6 +84,39 @@ fn cell_time_to_notebook_cell_time(ct: &CellTime) -> NotebookCellTime {
                 *end, *start,
             )))
         }
+    }
+}
+
+fn parse_event_aggregation(s: &str) -> FormulaAndFunctionEventAggregation {
+    match s.to_lowercase().as_str() {
+        "count" => FormulaAndFunctionEventAggregation::COUNT,
+        "avg" => FormulaAndFunctionEventAggregation::AVG,
+        "sum" => FormulaAndFunctionEventAggregation::SUM,
+        "min" => FormulaAndFunctionEventAggregation::MIN,
+        "max" => FormulaAndFunctionEventAggregation::MAX,
+        "median" => FormulaAndFunctionEventAggregation::MEDIAN,
+        "pc75" => FormulaAndFunctionEventAggregation::PC75,
+        "pc90" => FormulaAndFunctionEventAggregation::PC90,
+        "pc95" => FormulaAndFunctionEventAggregation::PC95,
+        "pc98" => FormulaAndFunctionEventAggregation::PC98,
+        "pc99" => FormulaAndFunctionEventAggregation::PC99,
+        "cardinality" => FormulaAndFunctionEventAggregation::CARDINALITY,
+        _ => FormulaAndFunctionEventAggregation::COUNT,
+    }
+}
+
+fn parse_events_data_source(s: &str) -> FormulaAndFunctionEventsDataSource {
+    match s.to_lowercase().as_str() {
+        "events" => FormulaAndFunctionEventsDataSource::EVENTS,
+        "logs" => FormulaAndFunctionEventsDataSource::LOGS,
+        "rum" => FormulaAndFunctionEventsDataSource::RUM,
+        "spans" => FormulaAndFunctionEventsDataSource::SPANS,
+        "security_signals" => FormulaAndFunctionEventsDataSource::SECURITY_SIGNALS,
+        "profiles" => FormulaAndFunctionEventsDataSource::PROFILES,
+        "audit" => FormulaAndFunctionEventsDataSource::AUDIT,
+        "ci_tests" => FormulaAndFunctionEventsDataSource::CI_TESTS,
+        "ci_pipelines" => FormulaAndFunctionEventsDataSource::CI_PIPELINES,
+        _ => FormulaAndFunctionEventsDataSource::EVENTS,
     }
 }
 
@@ -134,6 +189,66 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
             }
             NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(Box::new(attrs))
         }
+        Cell::EventQuery(eq) => {
+            let aggregation = parse_event_aggregation(&eq.compute);
+            let data_source = parse_events_data_source(&eq.data_source);
+
+            let mut compute = FormulaAndFunctionEventQueryDefinitionCompute::new(aggregation);
+            if let Some(ref m) = eq.metric {
+                compute = compute.metric(m.clone());
+            }
+
+            let mut event_query =
+                FormulaAndFunctionEventQueryDefinition::new(compute, data_source, "a".to_string())
+                    .search(FormulaAndFunctionEventQueryDefinitionSearch::new(
+                        eq.search.clone(),
+                    ));
+
+            if let Some(ref groups) = eq.group_by {
+                let sdk_groups: Vec<FormulaAndFunctionEventQueryGroupBy> = groups
+                    .iter()
+                    .map(|g| {
+                        let mut gb = FormulaAndFunctionEventQueryGroupBy::new(g.facet.clone());
+                        if let Some(limit) = g.limit {
+                            gb = gb.limit(limit);
+                        }
+                        gb
+                    })
+                    .collect();
+                event_query = event_query.group_by(sdk_groups);
+            }
+
+            let mut request = TimeseriesWidgetRequest::new()
+                .queries(vec![
+                    FormulaAndFunctionQueryDefinition::FormulaAndFunctionEventQueryDefinition(
+                        Box::new(event_query),
+                    ),
+                ])
+                .formulas(vec![WidgetFormula::new("a".to_string())]);
+
+            if let Some(ref dt) = eq.display_type {
+                request.display_type = Some(match dt.to_lowercase().as_str() {
+                    "bars" | "bar" => WidgetDisplayType::BARS,
+                    "area" => WidgetDisplayType::AREA,
+                    _ => WidgetDisplayType::LINE,
+                });
+            }
+
+            let mut definition = TimeseriesWidgetDefinition::new(
+                vec![request],
+                TimeseriesWidgetDefinitionType::TIMESERIES,
+            );
+
+            if let Some(ref title) = eq.title {
+                definition.title = Some(title.clone());
+            }
+
+            let mut attrs = NotebookTimeseriesCellAttributes::new(definition);
+            if let Some(cell_time) = &eq.time {
+                attrs.time = Some(Some(cell_time_to_notebook_cell_time(cell_time)));
+            }
+            NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(Box::new(attrs))
+        }
     };
 
     NotebookCellCreateRequest::new(attributes, NotebookCellResourceType::NOTEBOOK_CELLS)
@@ -201,6 +316,73 @@ fn extract_metric_query_from_queries(req: &TimeseriesWidgetRequest) -> Option<St
     None
 }
 
+/// Try to extract an event-query JSON object from a timeseries cell. Returns
+/// `Some(map)` when the first request uses a `FormulaAndFunctionEventQueryDefinition`.
+fn extract_event_query_json(
+    ts: &NotebookTimeseriesCellAttributes,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let req = ts.definition.requests.first()?;
+    let queries = req.queries.as_ref()?;
+    for q in queries {
+        if let FormulaAndFunctionQueryDefinition::FormulaAndFunctionEventQueryDefinition(def) = q {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "data_source".into(),
+                serde_json::Value::String(def.data_source.to_string()),
+            );
+            obj.insert(
+                "search".into(),
+                serde_json::Value::String(
+                    def.search
+                        .as_ref()
+                        .map(|s| s.query.clone())
+                        .unwrap_or_default(),
+                ),
+            );
+            obj.insert(
+                "compute".into(),
+                serde_json::Value::String(def.compute.aggregation.to_string()),
+            );
+            if let Some(ref metric) = def.compute.metric {
+                obj.insert(
+                    "metric".into(),
+                    serde_json::Value::String(metric.clone()),
+                );
+            }
+            if let Some(ref groups) = def.group_by {
+                let arr: Vec<serde_json::Value> = groups
+                    .iter()
+                    .map(|g| {
+                        let mut m = serde_json::Map::new();
+                        m.insert(
+                            "facet".into(),
+                            serde_json::Value::String(g.facet.clone()),
+                        );
+                        if let Some(limit) = g.limit {
+                            m.insert(
+                                "limit".into(),
+                                serde_json::Value::Number(serde_json::Number::from(limit)),
+                            );
+                        }
+                        serde_json::Value::Object(m)
+                    })
+                    .collect();
+                if !arr.is_empty() {
+                    obj.insert("group_by".into(), serde_json::Value::Array(arr));
+                }
+            }
+            if let Some(ref dt) = req.display_type {
+                obj.insert(
+                    "display_type".into(),
+                    serde_json::Value::String(dt.to_string()),
+                );
+            }
+            return Some(obj);
+        }
+    }
+    None
+}
+
 /// Convert a notebook cell response back to the markdown format the parser
 /// understands.
 pub fn notebook_cell_to_markdown(attrs: &NotebookCellResponseAttributes) -> String {
@@ -228,6 +410,22 @@ pub fn notebook_cell_to_markdown(attrs: &NotebookCellResponseAttributes) -> Stri
             )
         }
         NotebookCellResponseAttributes::NotebookTimeseriesCellAttributes(ts) => {
+            // Check if this is an event-query cell by looking for an event
+            // query definition in the requests.
+            if let Some(event_obj) = extract_event_query_json(ts) {
+                let mut obj = event_obj;
+                if let Some(title) = &ts.definition.title {
+                    obj.insert("title".into(), serde_json::Value::String(title.clone()));
+                }
+                if let Some(Some(time)) = &ts.time {
+                    obj.insert("time".into(), notebook_cell_time_to_json_value(time));
+                }
+                return format!(
+                    "```event-query\n{}\n```",
+                    serde_json::to_string_pretty(&obj).unwrap()
+                );
+            }
+
             let mut obj = serde_json::Map::new();
             if let Some(req) = ts.definition.requests.first() {
                 // Try the legacy `q` field first, then the newer `queries`
@@ -499,6 +697,85 @@ mod tests {
         }
     }
 
+    #[test]
+    fn event_query_cell_count() {
+        let cell = Cell::EventQuery(EventQueryCell {
+            data_source: "events".to_string(),
+            search: "source:deploy env:production".to_string(),
+            compute: "count".to_string(),
+            metric: None,
+            group_by: None,
+            title: Some("Deploy Events".to_string()),
+            display_type: None,
+            time: None,
+        });
+        let request = cell_to_create_request(&cell);
+
+        assert_eq!(request.type_, NotebookCellResourceType::NOTEBOOK_CELLS);
+        match &request.attributes {
+            NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(attrs) => {
+                assert_eq!(attrs.definition.requests.len(), 1);
+                let req = &attrs.definition.requests[0];
+                // Should use queries/formulas, not q
+                assert!(req.q.is_none());
+                assert!(req.queries.is_some());
+                assert!(req.formulas.is_some());
+                assert_eq!(attrs.definition.title.as_deref(), Some("Deploy Events"));
+            }
+            _ => panic!("Expected NotebookTimeseriesCellAttributes"),
+        }
+    }
+
+    #[test]
+    fn event_query_cell_with_metric_and_group_by() {
+        let cell = Cell::EventQuery(EventQueryCell {
+            data_source: "events".to_string(),
+            search: "source:deploy".to_string(),
+            compute: "avg".to_string(),
+            metric: Some("@duration".to_string()),
+            group_by: Some(vec![EventQueryGroupBy {
+                facet: "service".to_string(),
+                limit: Some(10),
+            }]),
+            title: None,
+            display_type: Some("bars".to_string()),
+            time: Some(CellTime::Relative("4h".to_string())),
+        });
+        let request = cell_to_create_request(&cell);
+
+        match &request.attributes {
+            NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(attrs) => {
+                let req = &attrs.definition.requests[0];
+                assert_eq!(req.display_type, Some(WidgetDisplayType::BARS));
+                // Verify the query definition
+                let queries = req.queries.as_ref().unwrap();
+                assert_eq!(queries.len(), 1);
+                match &queries[0] {
+                    FormulaAndFunctionQueryDefinition::FormulaAndFunctionEventQueryDefinition(
+                        def,
+                    ) => {
+                        assert_eq!(def.name, "a");
+                        assert_eq!(def.compute.metric.as_deref(), Some("@duration"));
+                        assert!(def.group_by.is_some());
+                        let groups = def.group_by.as_ref().unwrap();
+                        assert_eq!(groups.len(), 1);
+                        assert_eq!(groups[0].facet, "service");
+                        assert_eq!(groups[0].limit, Some(10));
+                    }
+                    _ => panic!("Expected FormulaAndFunctionEventQueryDefinition"),
+                }
+                // Verify time
+                match &attrs.time {
+                    Some(Some(NotebookCellTime::NotebookRelativeTime(rt))) => {
+                        assert_eq!(rt.live_span, WidgetLiveSpan::PAST_FOUR_HOURS);
+                    }
+                    other => panic!("Expected NotebookRelativeTime, got {:?}", other),
+                }
+            }
+            _ => panic!("Expected NotebookTimeseriesCellAttributes"),
+        }
+    }
+
     // --- reverse conversion tests ---
 
     #[test]
@@ -568,6 +845,89 @@ mod tests {
         assert!(md.starts_with("```metric-query\n"));
         assert!(md.ends_with("\n```"));
         assert!(md.contains("avg:system.cpu.user{*}"));
+    }
+
+    #[test]
+    fn reverse_event_query_cell() {
+        let compute = FormulaAndFunctionEventQueryDefinitionCompute::new(
+            FormulaAndFunctionEventAggregation::COUNT,
+        );
+        let event_query = FormulaAndFunctionEventQueryDefinition::new(
+            compute,
+            FormulaAndFunctionEventsDataSource::EVENTS,
+            "a".to_string(),
+        )
+        .search(FormulaAndFunctionEventQueryDefinitionSearch::new(
+            "source:deploy".to_string(),
+        ));
+
+        let request = TimeseriesWidgetRequest::new()
+            .queries(vec![
+                FormulaAndFunctionQueryDefinition::FormulaAndFunctionEventQueryDefinition(
+                    Box::new(event_query),
+                ),
+            ])
+            .formulas(vec![WidgetFormula::new("a".to_string())]);
+
+        let mut def = TimeseriesWidgetDefinition::new(
+            vec![request],
+            TimeseriesWidgetDefinitionType::TIMESERIES,
+        );
+        def.title = Some("Deploy Events".to_string());
+
+        let attrs = NotebookCellResponseAttributes::NotebookTimeseriesCellAttributes(Box::new(
+            NotebookTimeseriesCellAttributes::new(def),
+        ));
+        let md = notebook_cell_to_markdown(&attrs);
+        assert!(md.starts_with("```event-query\n"), "got: {}", md);
+        assert!(md.ends_with("\n```"));
+        assert!(md.contains("\"data_source\": \"events\""));
+        assert!(md.contains("\"search\": \"source:deploy\""));
+        assert!(md.contains("\"compute\": \"count\""));
+        assert!(md.contains("\"title\": \"Deploy Events\""));
+    }
+
+    #[test]
+    fn reverse_event_query_cell_with_group_by() {
+        let compute = FormulaAndFunctionEventQueryDefinitionCompute::new(
+            FormulaAndFunctionEventAggregation::AVG,
+        )
+        .metric("@duration".to_string());
+        let event_query = FormulaAndFunctionEventQueryDefinition::new(
+            compute,
+            FormulaAndFunctionEventsDataSource::EVENTS,
+            "a".to_string(),
+        )
+        .search(FormulaAndFunctionEventQueryDefinitionSearch::new(
+            "source:deploy".to_string(),
+        ))
+        .group_by(vec![
+            FormulaAndFunctionEventQueryGroupBy::new("service".to_string()).limit(10),
+        ]);
+
+        let request = TimeseriesWidgetRequest::new()
+            .queries(vec![
+                FormulaAndFunctionQueryDefinition::FormulaAndFunctionEventQueryDefinition(
+                    Box::new(event_query),
+                ),
+            ])
+            .formulas(vec![WidgetFormula::new("a".to_string())]);
+
+        let def = TimeseriesWidgetDefinition::new(
+            vec![request],
+            TimeseriesWidgetDefinitionType::TIMESERIES,
+        );
+
+        let attrs = NotebookCellResponseAttributes::NotebookTimeseriesCellAttributes(Box::new(
+            NotebookTimeseriesCellAttributes::new(def),
+        ));
+        let md = notebook_cell_to_markdown(&attrs);
+        assert!(md.starts_with("```event-query\n"), "got: {}", md);
+        assert!(md.contains("\"compute\": \"avg\""));
+        assert!(md.contains("\"metric\": \"@duration\""));
+        assert!(md.contains("\"group_by\""));
+        assert!(md.contains("\"facet\": \"service\""));
+        assert!(md.contains("\"limit\": 10"));
     }
 
     #[test]

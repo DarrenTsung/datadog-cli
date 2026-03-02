@@ -77,6 +77,47 @@ With title, aliases, and display type:
 | `aliases`      | No       | Map of query expression to display name for the legend. Example: `{"avg:system.cpu.user{*}": "CPU Usage"}` |
 | `display_type` | No       | Graph style: `"line"` (default), `"bars"`, or `"area"`.     |
 
+### Event queries (becomes Timeseries cells)
+
+A fenced code block tagged ` ```event-query ` is parsed as JSON and becomes a **Timeseries cell** backed by the formula-and-function event query API. This is useful for graphing event counts, durations, or other metrics from event-based data sources (events, logs, RUM, spans, etc.).
+
+Simple count:
+
+```json
+{
+  "data_source": "events",
+  "search": "source:deploy env:production",
+  "compute": "count",
+  "title": "Deploy Events"
+}
+```
+
+With metric aggregation and grouping:
+
+```json
+{
+  "data_source": "events",
+  "search": "source:deploy",
+  "compute": "avg",
+  "metric": "@duration",
+  "group_by": [{"facet": "service", "limit": 10}],
+  "title": "Deploy Duration by Service",
+  "display_type": "bars",
+  "time": "4h"
+}
+```
+
+| Field          | Required | Description                                                  |
+|----------------|----------|--------------------------------------------------------------|
+| `data_source`  | Yes      | Data source: `"events"`, `"logs"`, `"rum"`, `"spans"`, `"security_signals"`, `"audit"`, `"ci_tests"`, `"ci_pipelines"`, etc. |
+| `search`       | Yes      | Filter query string (e.g. `"source:deploy env:production"`)  |
+| `compute`      | Yes      | Aggregation: `"count"`, `"avg"`, `"sum"`, `"min"`, `"max"`, `"median"`, `"pc75"`, `"pc90"`, `"pc95"`, `"pc98"`, `"pc99"`, `"cardinality"` |
+| `metric`       | No       | Metric field for aggregations other than count (e.g. `"@duration"`) |
+| `group_by`     | No       | Array of grouping objects: `{"facet": "field", "limit": 10}` |
+| `title`        | No       | Graph title displayed above the timeseries widget.           |
+| `display_type` | No       | Graph style: `"line"` (default), `"bars"`, or `"area"`.     |
+| `time`         | No       | Per-cell time override (same format as log-query `time`).    |
+
 ## Example markdown file
 
 ````markdown
@@ -220,8 +261,8 @@ Then create a Chrome bookmark and paste the clipboard as the URL.
 - Empty or whitespace-only markdown between special blocks is dropped (no empty cells)
 - Leading/trailing blank lines on markdown cells are trimmed
 - Regular code fences (` ```python `, ` ```json `, etc.) are treated as normal markdown
-- A ` ```log-query ` or ` ```metric-query ` inside another fenced block is **not** treated as special
-- Unterminated ` ```log-query ` or ` ```metric-query ` blocks produce an error
+- A ` ```log-query `, ` ```metric-query `, or ` ```event-query ` inside another fenced block is **not** treated as special
+- Unterminated ` ```log-query `, ` ```metric-query `, or ` ```event-query ` blocks produce an error
 - Invalid JSON inside a special block produces an error
-- The `query` field is required in both log-query and metric-query JSON; missing it is an error
+- The `query` field is required in log-query and metric-query JSON; `data_source`, `search`, and `compute` are required in event-query JSON
 - Section links (`[text](#slug)`) must reference a heading that exists in the document — warn if a link target has no matching heading
