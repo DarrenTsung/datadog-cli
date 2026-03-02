@@ -73,6 +73,7 @@ pub enum NotebooksCommand {
         #[structopt(long)]
         id: String,
     },
+
 }
 
 // ---------------------------------------------------------------------------
@@ -417,10 +418,16 @@ pub async fn run_notebooks(
                 title
             };
 
+            // Fetch existing cell IDs for the update (reuse IDs to avoid
+            // cell duplication).
             let t2 = Instant::now();
+            let existing_ids = api::get_cell_ids(api_key, app_key, id).await?;
+            eprintln!("[{:.2}s] fetched {} existing cell IDs", t2.elapsed().as_secs_f64(), existing_ids.len());
+
+            let t3 = Instant::now();
             let response =
-                api::update_notebook(api_key, app_key, id, &title, &cells, live_span).await?;
-            eprintln!("[{:.2}s] update API calls (fetch + replace)", t2.elapsed().as_secs_f64());
+                api::update_notebook(api_key, app_key, id, &title, &cells, live_span, &existing_ids).await?;
+            eprintln!("[{:.2}s] update API call", t3.elapsed().as_secs_f64());
 
             if let Some(data) = response.data {
                 println!("Updated notebook: https://app.datadoghq.com/notebook/{}", data.id);
@@ -628,4 +635,5 @@ mod tests {
         let year = infer_year(text);
         assert_eq!(year, Utc::now().year());
     }
+
 }

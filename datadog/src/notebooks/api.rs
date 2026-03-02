@@ -81,6 +81,11 @@ pub async fn create_notebook(
     })
 }
 
+/// Update notebook cells, reusing existing cell IDs where possible.
+///
+/// `existing_cell_ids` should come from a prior `get_cell_ids` call. Cells at
+/// matching positions are sent as UpdateRequests (preserving their ID);
+/// extra cells are sent as CreateRequests.
 pub async fn update_notebook(
     api_key: &str,
     app_key: &str,
@@ -88,49 +93,23 @@ pub async fn update_notebook(
     title: &str,
     parsed_cells: &[Cell],
     live_span: WidgetLiveSpan,
+    existing_cell_ids: &[String],
 ) -> anyhow::Result<NotebookResponse> {
     let config = make_configuration(api_key, app_key);
     let api = NotebooksAPI::with_config(config);
     let time = make_global_time(live_span);
 
-    // Fetch existing notebook to get cell IDs. The update API appends
-    // CreateRequests as new cells — to get replacement behavior we must
-    // reference existing cell IDs via UpdateRequests so the API knows to
-    // delete unreferenced cells.
-    let existing = api.get_notebook(notebook_id).await.map_err(|e| match &e {
-        datadog::Error::ResponseError(resp) => {
-            anyhow!("Failed to fetch notebook ({}): {}", resp.status, resp.content)
-        }
-        _ => anyhow!(e).context("Failed to fetch notebook"),
-    })?;
-
-    let existing_ids: Vec<String> = existing
-        .data
-        .as_ref()
-        .map(|d| {
-            d.attributes
-                .cells
-                .iter()
-                .map(|c| c.id.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-
     let new_create_cells: Vec<NotebookCellCreateRequest> =
         cells::cells_to_create_requests(parsed_cells);
 
-    // For each new cell: if there's a corresponding existing cell ID at that
-    // position, wrap it as an UpdateRequest (reusing the ID). Otherwise use a
-    // CreateRequest. Existing cells beyond the new count are not referenced
-    // and get auto-deleted by the API.
     let cell_requests: Vec<NotebookUpdateCell> = new_create_cells
         .into_iter()
         .enumerate()
         .map(|(i, create)| {
-            if i < existing_ids.len() {
+            if i < existing_cell_ids.len() {
                 let update = NotebookCellUpdateRequest::new(
                     cells::create_attrs_to_update_attrs(&create.attributes),
-                    existing_ids[i].clone(),
+                    existing_cell_ids[i].clone(),
                     create.type_,
                 );
                 NotebookUpdateCell::NotebookCellUpdateRequest(Box::new(update))
@@ -152,6 +131,20 @@ pub async fn update_notebook(
         _ => anyhow!(e).context("Failed to update notebook"),
     })
 }
+
+/// Fetch cell IDs for an existing notebook.
+pub async fn get_cell_ids(
+    api_key: &str,
+    app_key: &str,
+    notebook_id: i64,
+) -> anyhow::Result<Vec<String>> {
+    let response = get_notebook(api_key, app_key, notebook_id).await?;
+    Ok(response
+        .data
+        .map(|d| d.attributes.cells.iter().map(|c| c.id.clone()).collect())
+        .unwrap_or_default())
+}
+
 
 pub async fn list_notebooks(
     api_key: &str,
