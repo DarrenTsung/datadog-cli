@@ -1,3 +1,4 @@
+mod ci;
 mod dashboard;
 mod events;
 mod metrics;
@@ -30,6 +31,8 @@ struct Opt {
 
 #[derive(StructOpt, Debug)]
 enum Command {
+    /// Query CI Visibility test events.
+    Ci(ci::CiOpt),
     /// Collect logs from the Datadog log API.
     Logs(LogsOpt),
     /// Manage Datadog notebooks from markdown files.
@@ -148,7 +151,7 @@ struct SearchLogResponse {
 }
 
 /// Resolve a dot-separated path like "attributes.version" into a nested JSON value.
-fn resolve_path<'a>(value: &'a Value, path: &str) -> &'a Value {
+pub fn resolve_path<'a>(value: &'a Value, path: &str) -> &'a Value {
     let mut current = value;
     for segment in path.split('.') {
         current = &current[segment];
@@ -170,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
     let opt = Opt::from_args();
 
     match opt.cmd {
+        Command::Ci(ci_opt) => ci::run_ci(&opt.dd_api_key, &opt.dd_application_key, ci_opt).await,
         Command::Events(e_opt) => events::run_events(&opt.dd_api_key, &opt.dd_application_key, e_opt).await,
         Command::Logs(logs_opt) => run_logs(&opt.dd_api_key, &opt.dd_application_key, logs_opt).await,
         Command::Metrics(m_opt) => metrics::run_metrics(&opt.dd_api_key, &opt.dd_application_key, m_opt).await,
