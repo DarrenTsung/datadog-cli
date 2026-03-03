@@ -63,6 +63,30 @@ datadog ci --time-range "last 7 days" \
   --sort-by oldest --limit 10
 ```
 
+### Aggregate: pass/fail counts (server-side)
+
+Use `--group-by` to get counts without fetching individual events:
+
+```bash
+datadog ci --time-range "last 7 days" \
+  --query '@test.name:"my_test" @git.branch:master' \
+  --group-by '@test.status'
+```
+
+Output:
+```json
+{"@test.status":"fail","c0":7.0}
+{"@test.status":"pass","c0":340.0}
+```
+
+Multi-facet grouping:
+
+```bash
+datadog ci --time-range "last 7 days" \
+  --query '@test.name:"my_test"' \
+  --group-by '@test.status,@git.branch'
+```
+
 ### Resume pagination
 
 If a search is cut off, the CLI prints the last cursor. Resume with `--cursor`:
@@ -86,8 +110,9 @@ datadog ci --time-range "last 7 days" --cursor "eyJhZnRlciI6..."
 | `--columns`       | No                                | Comma-separated columns (default: `@test.status,@test.name,@test.service,@git.branch`) |
 | `--add-columns`   | No                                | Additional columns to append to `--columns`                                     |
 | `--all-columns`   | No                                | Output all attributes for each CI test event                                    |
+| `--group-by`      | No                                | Group by facet(s) and return counts server-side (e.g. `'@test.status'`)         |
 
-*`--limit` must be <= 100 unless `--force` is used.
+*`--limit` must be <= 100 unless `--force` is used. Not required when using `--group-by`.
 
 ## Output format
 
@@ -141,4 +166,14 @@ datadog ci --time-range "last 7 days" \
 datadog ci --time-range "last 1 hour" \
   --query '@test.service:my-service @test.status:fail' \
   --all-columns --limit 5
+
+# Pass/fail ratio for a test (single server-side query)
+datadog ci --time-range "last 7 days" \
+  --query '@test.name:"my_test" @git.branch:master' \
+  --group-by '@test.status'
+
+# Failure counts broken down by branch
+datadog ci --time-range "last 7 days" \
+  --query '@test.name:"my_test" @test.status:fail' \
+  --group-by '@git.branch'
 ```

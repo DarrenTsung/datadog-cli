@@ -2,7 +2,10 @@ pub(crate) mod api;
 
 use crate::{resolve_path, SortOrder};
 use datadog_api_client::datadogV2::api::api_ci_visibility_tests::ListCIAppTestEventsOptionalParams;
-use datadog_api_client::datadogV2::model::CIAppSort;
+use datadog_api_client::datadogV2::model::{
+    CIAppAggregationFunction, CIAppCompute, CIAppComputeType, CIAppSort,
+    CIAppTestsAggregateRequest, CIAppTestsGroupBy, CIAppTestsQueryFilter,
+};
 use datadog_utils::TimeRange;
 use serde_json::Value;
 use structopt::StructOpt;
@@ -42,6 +45,11 @@ pub struct CiOpt {
     #[structopt(long)]
     all_columns: bool,
 
+    /// Group results by facet(s) and return counts instead of individual events.
+    /// Comma-separated (e.g., '@test.status' or '@test.status,@test.service').
+    #[structopt(long)]
+    group_by: Option<String>,
+
     /// Bypass the --limit <= 100 guard.
     #[structopt(long)]
     force: bool,
@@ -57,6 +65,10 @@ You are fetching too much data. Consider a more targeted approach:
   - Use --columns to reduce output size per row";
 
 pub async fn run_ci(api_key: &str, app_key: &str, opt: CiOpt) -> anyhow::Result<()> {
+    if let Some(ref group_by) = opt.group_by {
+        return run_aggregate(api_key, app_key, &opt, group_by).await;
+    }
+
     if !opt.force && !opt.limit.is_some_and(|l| l <= 100) {
         return Err(anyhow::anyhow!(LIMIT_GUARD));
     }
@@ -152,6 +164,67 @@ pub async fn run_ci(api_key: &str, app_key: &str, opt: CiOpt) -> anyhow::Result<
         } else {
             break;
         }
+    }
+
+    Ok(())
+}
+
+async fn run_aggregate(
+    api_key: &str,
+    app_key: &str,
+    opt: &CiOpt,
+    group_by_str: &str,
+) -> anyhow::Result<()> {
+    let group_by: Vec<CIAppTestsGroupBy> = group_by_str
+        .split(',')
+        .map(|facet| CIAppTestsGroupBy::new(facet.trim().to_string()))
+        .collect();
+
+    let compute = vec![CIAppCompute::new(CIAppAggregationFunction::COUNT)
+        .type_(CIAppComputeType::TOTAL)];
+
+    let mut filter = CIAppTestsQueryFilter::new()
+        .from(opt.time_range.from.to_rfc3339())
+        .to(opt.time_range.to.to_rfc3339());
+
+    if let Some(ref query) = opt.query {
+        filter = filter.query(query.clone());
+    }
+
+    let body = CIAppTestsAggregateRequest::new()
+        .compute(compute)
+        .filter(filter)
+        .group_by(group_by);
+
+    let response = api::aggregate_ci_test_events(api_key, app_key, body).await?;
+
+    let buckets = response
+        .data
+        .and_then(|d| d.buckets)
+        .unwrap_or_default();
+
+    if buckets.is_empty() {
+        eprintln!("No results.");
+        return Ok(());
+    }
+
+    for bucket in &buckets {
+        let mut obj = serde_json::Map::new();
+
+        if let Some(ref by) = bucket.by {
+            for (key, val) in by {
+                obj.insert(key.clone(), val.clone());
+            }
+        }
+
+        if let Some(ref computes) = bucket.computes {
+            for (key, val) in computes {
+                let v = serde_json::to_value(val)?;
+                obj.insert(key.clone(), v);
+            }
+        }
+
+        println!("{}", serde_json::to_string(&Value::Object(obj))?);
     }
 
     Ok(())
