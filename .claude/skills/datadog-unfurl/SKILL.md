@@ -33,7 +33,7 @@ datadog unfurl "https://app.datadoghq.com/s/e16e18c08/yry-azg-bva" --json
 3. **Decodes metric explorer fragments** — metric explorer URLs encode the widget definition as lz-string in the URL fragment; the tool decompresses and parses it
 4. **Fetches notebook cells** — for notebook URLs, fetches the notebook via API and shows the specific cell (if `cell_id` is present) or all cells, using the same widget format as dashboards
 5. **Shows widget details** — title, type, formulas, and metric queries in a readable format
-6. **Downloads the snapshot image** to `dd-widget-<ID>.png`, `dd-metric-explorer.png`, or `dd-notebook-snapshot.png` (for shared links only — this is the same `og:image` that Slack unfurls)
+6. **Downloads the snapshot image** to the current directory (for shared links only — this is the same `og:image` that Slack unfurls). Filenames include the ID when available (`dd-widget-<ID>.png`, `dd-notebook-<ID>.png`) and auto-increment (`-1`, `-2`, ...) to avoid overwriting existing files
 
 ## Supported URL formats
 

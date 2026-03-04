@@ -3,6 +3,7 @@ mod api;
 use crate::notebooks;
 
 use anyhow::{anyhow, bail, Context};
+use std::path::Path;
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
@@ -461,6 +462,22 @@ fn format_widgets(widgets: &[serde_json::Value]) -> String {
         .join("\n")
 }
 
+/// Pick a filename that doesn't collide with existing files. If `base.ext`
+/// exists, tries `base-1.ext`, `base-2.ext`, etc.
+fn unique_path(base: &str, ext: &str) -> String {
+    let candidate = format!("{base}.{ext}");
+    if !Path::new(&candidate).exists() {
+        return candidate;
+    }
+    for i in 1.. {
+        let candidate = format!("{base}-{i}.{ext}");
+        if !Path::new(&candidate).exists() {
+            return candidate;
+        }
+    }
+    unreachable!()
+}
+
 pub async fn run_unfurl(
     api_key: &str,
     app_key: &str,
@@ -486,8 +503,8 @@ pub async fn run_unfurl(
             handle_metric_explorer(&url, opt.json)?;
 
             if let Some(image_url) = &og_image_url {
-                let path = "dd-metric-explorer.png";
-                match download_to_file(image_url, path).await {
+                let path = unique_path("dd-metric-explorer", "png");
+                match download_to_file(image_url, &path).await {
                     Ok(()) => {
                         eprintln!("Snapshot: {}", path);
                         eprintln!("(Tip: the snapshot may include cursor annotations — timestamp and count — not shown above)");
@@ -523,7 +540,7 @@ pub async fn run_unfurl(
 
                     // Download the og:image from the shared link (same image Slack shows).
                     if let Some(image_url) = &og_image_url {
-                        let path = format!("dd-widget-{}.png", target_id);
+                        let path = unique_path(&format!("dd-widget-{}", target_id), "png");
                         match download_to_file(image_url, &path).await {
                             Ok(()) => {
                                 eprintln!("Snapshot: {}", path);
@@ -597,8 +614,13 @@ pub async fn run_unfurl(
             }
 
             if let Some(image_url) = &og_image_url {
-                let path = "dd-notebook-snapshot.png";
-                match download_to_file(image_url, path).await {
+                let base = match (notebook_id, &cell_id) {
+                    (Some(nb), Some(cid)) => format!("dd-notebook-{}-{}", nb, cid),
+                    (Some(nb), None) => format!("dd-notebook-{}", nb),
+                    _ => "dd-notebook-snapshot".to_string(),
+                };
+                let path = unique_path(&base, "png");
+                match download_to_file(image_url, &path).await {
                     Ok(()) => {
                         eprintln!("Snapshot: {}", path);
                         eprintln!("(Tip: the snapshot may include cursor annotations — timestamp and count — not shown above)");
