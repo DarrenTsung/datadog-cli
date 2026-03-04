@@ -33,7 +33,7 @@ datadog unfurl "https://app.datadoghq.com/s/e16e18c08/yry-azg-bva" --json
 3. **Decodes metric explorer fragments** — metric explorer URLs encode the widget definition as lz-string in the URL fragment; the tool decompresses and parses it
 4. **Fetches notebook cells** — for notebook URLs, fetches the notebook via API and shows the specific cell (if `cell_id` is present) or all cells, using the same widget format as dashboards
 5. **Shows widget details** — title, type, formulas, and metric queries in a readable format
-6. **Downloads the snapshot image** to `/tmp/dd-widget-<ID>.png`, `/tmp/dd-metric-explorer.png`, or `/tmp/dd-notebook-snapshot.png` (for shared links only — this is the same `og:image` that Slack unfurls)
+6. **Downloads the snapshot image** to `dd-widget-<ID>.png`, `dd-metric-explorer.png`, or `dd-notebook-snapshot.png` (for shared links only — this is the same `og:image` that Slack unfurls)
 
 ## Supported URL formats
 
@@ -64,6 +64,6 @@ Type: timeseries
 Request 1:
   Formula: default_zero(query1)
   Query (query1): sum:multiplayer.docs.load_failed{$env,$pod_name} by {error}.as_count()
-Snapshot: /tmp/dd-widget-3737456056966802.png
+Snapshot: dd-widget-3737456056966802.png
 (Tip: the snapshot may include cursor annotations — timestamp and count — not shown above)
 ```

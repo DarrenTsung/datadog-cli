@@ -486,7 +486,7 @@ pub async fn run_unfurl(
             handle_metric_explorer(&url, opt.json)?;
 
             if let Some(image_url) = &og_image_url {
-                let path = "/tmp/dd-metric-explorer.png";
+                let path = "dd-metric-explorer.png";
                 match download_to_file(image_url, path).await {
                     Ok(()) => {
                         eprintln!("Snapshot: {}", path);
@@ -523,7 +523,7 @@ pub async fn run_unfurl(
 
                     // Download the og:image from the shared link (same image Slack shows).
                     if let Some(image_url) = &og_image_url {
-                        let path = format!("/tmp/dd-widget-{}.png", target_id);
+                        let path = format!("dd-widget-{}.png", target_id);
                         match download_to_file(image_url, &path).await {
                             Ok(()) => {
                                 eprintln!("Snapshot: {}", path);
@@ -597,7 +597,7 @@ pub async fn run_unfurl(
             }
 
             if let Some(image_url) = &og_image_url {
-                let path = "/tmp/dd-notebook-snapshot.png";
+                let path = "dd-notebook-snapshot.png";
                 match download_to_file(image_url, path).await {
                     Ok(()) => {
                         eprintln!("Snapshot: {}", path);
