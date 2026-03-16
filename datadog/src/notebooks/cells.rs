@@ -474,6 +474,15 @@ pub fn notebook_cell_to_markdown(attrs: &NotebookCellResponseAttributes) -> Stri
     }
 }
 
+/// Emit template variables as a YAML frontmatter block for round-tripping.
+pub fn template_variables_to_frontmatter(vars: &serde_json::Value) -> String {
+    // Wrap in a mapping with a "variables" key so the YAML matches the
+    // frontmatter format the parser expects.
+    let wrapper = serde_json::json!({ "variables": vars });
+    let yaml = serde_yaml::to_string(&wrapper).unwrap_or_default();
+    format!("---\n{yaml}---\n\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

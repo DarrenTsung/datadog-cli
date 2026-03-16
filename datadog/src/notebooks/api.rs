@@ -61,6 +61,7 @@ pub async fn create_notebook(
     title: &str,
     parsed_cells: &[Cell],
     live_span: WidgetLiveSpan,
+    template_variables: Option<&serde_json::Value>,
 ) -> anyhow::Result<NotebookResponse> {
     let config = make_configuration(api_key, app_key);
     let api = NotebooksAPI::with_config(config);
@@ -68,8 +69,13 @@ pub async fn create_notebook(
     let cell_requests: Vec<NotebookCellCreateRequest> =
         cells::cells_to_create_requests(parsed_cells);
 
+    let mut attrs = NotebookCreateDataAttributes::new(cell_requests, title.to_string(), make_global_time(live_span));
+    if let Some(vars) = template_variables {
+        attrs.additional_properties.insert("template_variables".to_string(), vars.clone());
+    }
+
     let body = NotebookCreateRequest::new(NotebookCreateData::new(
-        NotebookCreateDataAttributes::new(cell_requests, title.to_string(), make_global_time(live_span)),
+        attrs,
         NotebookResourceType::NOTEBOOKS,
     ));
 
@@ -94,6 +100,7 @@ pub async fn update_notebook(
     parsed_cells: &[Cell],
     live_span: WidgetLiveSpan,
     existing_cell_ids: &[String],
+    template_variables: Option<&serde_json::Value>,
 ) -> anyhow::Result<NotebookResponse> {
     let config = make_configuration(api_key, app_key);
     let api = NotebooksAPI::with_config(config);
@@ -119,8 +126,13 @@ pub async fn update_notebook(
         })
         .collect();
 
+    let mut attrs = NotebookUpdateDataAttributes::new(cell_requests, title.to_string(), time);
+    if let Some(vars) = template_variables {
+        attrs.additional_properties.insert("template_variables".to_string(), vars.clone());
+    }
+
     let body = NotebookUpdateRequest::new(NotebookUpdateData::new(
-        NotebookUpdateDataAttributes::new(cell_requests, title.to_string(), time),
+        attrs,
         NotebookResourceType::NOTEBOOKS,
     ));
 

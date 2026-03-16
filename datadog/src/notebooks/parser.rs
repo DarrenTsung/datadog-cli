@@ -2,6 +2,13 @@ use anyhow::{bail, Context};
 
 use super::cells::{Cell, EventQueryCell, LogQueryCell, MetricQueryCell};
 
+/// Result of parsing a markdown document: cells plus optional frontmatter metadata.
+#[derive(Debug)]
+pub struct ParseResult {
+    pub cells: Vec<Cell>,
+    pub template_variables: Option<serde_json::Value>,
+}
+
 #[derive(Debug)]
 enum State {
     Normal,
@@ -11,16 +18,58 @@ enum State {
     InEventQuery,
 }
 
+/// Strip a YAML frontmatter block from the top of the input (delimited by `---`).
+/// Returns the parsed `variables` value (if present) and the remaining content.
+fn parse_frontmatter(input: &str) -> anyhow::Result<(Option<serde_json::Value>, &str)> {
+    let trimmed = input.trim_start();
+    if !trimmed.starts_with("---") {
+        return Ok((None, input));
+    }
+
+    // Find the closing `---`.
+    let after_open = &trimmed[3..];
+    // Skip the rest of the opening `---` line.
+    let after_open = match after_open.find('\n') {
+        Some(pos) => &after_open[pos + 1..],
+        None => return Ok((None, input)), // only `---` with no closing
+    };
+
+    let close_pos = match after_open.find("\n---") {
+        Some(pos) => pos,
+        None => return Ok((None, input)),
+    };
+
+    let yaml_block = &after_open[..close_pos];
+    let after_close = &after_open[close_pos + 4..]; // skip `\n---`
+    // Skip the rest of the closing `---` line.
+    let remaining = match after_close.find('\n') {
+        Some(pos) => &after_close[pos + 1..],
+        None => "",
+    };
+
+    let parsed: serde_json::Value = serde_yaml::from_str(yaml_block)
+        .with_context(|| format!("Invalid YAML in frontmatter: {yaml_block}"))?;
+
+    let template_variables = parsed.get("variables").cloned();
+
+    Ok((template_variables, remaining))
+}
+
 /// Parse a markdown document into a sequence of notebook cells.
 ///
 /// Prose becomes `Cell::Markdown`, and ` ```log-query ` fenced blocks become
 /// `Cell::LogQuery` (their body is parsed as JSON).
-pub fn parse_markdown(input: &str) -> anyhow::Result<Vec<Cell>> {
+///
+/// If the document starts with a YAML frontmatter block (`---` delimited),
+/// the `variables` key is extracted as template variables.
+pub fn parse_markdown(input: &str) -> anyhow::Result<ParseResult> {
+    let (template_variables, content) = parse_frontmatter(input)?;
+
     let mut cells = Vec::new();
     let mut state = State::Normal;
     let mut buffer = String::new();
 
-    for line in input.lines() {
+    for line in content.lines() {
         let trimmed = line.trim();
 
         match state {
@@ -121,7 +170,10 @@ pub fn parse_markdown(input: &str) -> anyhow::Result<Vec<Cell>> {
         }
     }
 
-    Ok(cells)
+    Ok(ParseResult {
+        cells,
+        template_variables,
+    })
 }
 
 /// Validate that all `[text](#slug)` section links point to a heading that
@@ -236,14 +288,14 @@ mod tests {
     #[test]
     fn pure_markdown() {
         let input = "# Hello\nText";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(cells, vec![Cell::Markdown("# Hello\nText".to_string())]);
     }
 
     #[test]
     fn single_log_query() {
         let input = "```log-query\n{\"query\":\"env:prod\"}\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(
             cells,
             vec![Cell::LogQuery(LogQueryCell {
@@ -258,7 +310,7 @@ mod tests {
     #[test]
     fn mixed_md_logquery_md() {
         let input = "# Title\n\n```log-query\n{\"query\":\"env:prod\"}\n```\n\nFooter text";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(cells.len(), 3);
         assert_eq!(cells[0], Cell::Markdown("# Title".to_string()));
         assert_eq!(
@@ -277,7 +329,7 @@ mod tests {
     fn multiple_log_query_blocks() {
         let input =
             "```log-query\n{\"query\":\"a\"}\n```\n\nMiddle\n\n```log-query\n{\"query\":\"b\"}\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(cells.len(), 3);
         assert_eq!(
             cells[0],
@@ -303,7 +355,7 @@ mod tests {
     #[test]
     fn adjacent_log_query_blocks_no_empty_markdown() {
         let input = "```log-query\n{\"query\":\"a\"}\n```\n```log-query\n{\"query\":\"b\"}\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(cells.len(), 2);
         assert!(matches!(&cells[0], Cell::LogQuery(_)));
         assert!(matches!(&cells[1], Cell::LogQuery(_)));
@@ -312,7 +364,7 @@ mod tests {
     #[test]
     fn log_query_with_indexes() {
         let input = "```log-query\n{\"query\":\"env:prod\",\"indexes\":[\"main\"]}\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(
             cells,
             vec![Cell::LogQuery(LogQueryCell {
@@ -327,7 +379,7 @@ mod tests {
     #[test]
     fn regular_code_fence_preserved_as_markdown() {
         let input = "```python\nprint(\"hi\")\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(cells.len(), 1);
         match &cells[0] {
             Cell::Markdown(text) => {
@@ -342,7 +394,7 @@ mod tests {
     #[test]
     fn log_query_tag_inside_regular_fence_not_special() {
         let input = "```markdown\n```log-query\n{\"query\":\"a\"}\n```\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(cells.len(), 1);
         assert!(matches!(&cells[0], Cell::Markdown(_)));
     }
@@ -378,20 +430,20 @@ mod tests {
 
     #[test]
     fn empty_document() {
-        let cells = parse_markdown("").unwrap();
+        let cells = parse_markdown("").unwrap().cells;
         assert!(cells.is_empty());
     }
 
     #[test]
     fn whitespace_only() {
-        let cells = parse_markdown("  \n  ").unwrap();
+        let cells = parse_markdown("  \n  ").unwrap().cells;
         assert!(cells.is_empty());
     }
 
     #[test]
     fn trailing_spaces_on_fence() {
         let input = "```log-query   \n{\"query\":\"env:prod\"}\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(
             cells,
             vec![Cell::LogQuery(LogQueryCell {
@@ -406,7 +458,7 @@ mod tests {
     #[test]
     fn log_query_with_relative_time() {
         let input = "```log-query\n{\"query\":\"env:prod\",\"time\":\"4h\"}\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(
             cells,
             vec![Cell::LogQuery(LogQueryCell {
@@ -421,7 +473,7 @@ mod tests {
     #[test]
     fn log_query_with_absolute_time() {
         let input = "```log-query\n{\"query\":\"env:prod\",\"time\":{\"start\":\"2026-02-20T00:00:00Z\",\"end\":\"2026-02-24T00:00:00Z\"}}\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(
             cells,
             vec![Cell::LogQuery(LogQueryCell {
@@ -440,7 +492,7 @@ mod tests {
     fn single_metric_query() {
         let input =
             "```metric-query\n{\"query\":\"avg:system.cpu.user{env:production}\"}\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(
             cells,
             vec![Cell::MetricQuery(MetricQueryCell {
@@ -457,7 +509,7 @@ mod tests {
     fn metric_query_with_time() {
         let input =
             "```metric-query\n{\"query\":\"avg:system.cpu.user{*}\",\"time\":\"4h\"}\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(
             cells,
             vec![Cell::MetricQuery(MetricQueryCell {
@@ -473,7 +525,7 @@ mod tests {
     #[test]
     fn mixed_log_and_metric_queries() {
         let input = "# Title\n\n```log-query\n{\"query\":\"env:prod\"}\n```\n\n```metric-query\n{\"query\":\"avg:system.cpu.user{*}\"}\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(cells.len(), 3);
         assert!(matches!(&cells[0], Cell::Markdown(_)));
         assert!(matches!(&cells[1], Cell::LogQuery(_)));
@@ -511,7 +563,7 @@ mod tests {
     #[test]
     fn single_event_query() {
         let input = "```event-query\n{\"data_source\":\"events\",\"search\":\"source:deploy\",\"compute\":\"count\"}\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(
             cells,
             vec![Cell::EventQuery(cells::EventQueryCell {
@@ -532,7 +584,7 @@ mod tests {
         let input = r#"```event-query
 {"data_source":"events","search":"source:deploy","compute":"avg","metric":"@duration","group_by":[{"facet":"service","limit":10}],"title":"Deploy Duration","display_type":"bars","time":"4h"}
 ```"#;
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(
             cells,
             vec![Cell::EventQuery(cells::EventQueryCell {
@@ -554,7 +606,7 @@ mod tests {
     #[test]
     fn mixed_all_query_types() {
         let input = "# Title\n\n```log-query\n{\"query\":\"env:prod\"}\n```\n\n```metric-query\n{\"query\":\"avg:system.cpu.user{*}\"}\n```\n\n```event-query\n{\"data_source\":\"events\",\"search\":\"source:deploy\",\"compute\":\"count\"}\n```";
-        let cells = parse_markdown(input).unwrap();
+        let cells = parse_markdown(input).unwrap().cells;
         assert_eq!(cells.len(), 4);
         assert!(matches!(&cells[0], Cell::Markdown(_)));
         assert!(matches!(&cells[1], Cell::LogQuery(_)));
@@ -617,5 +669,55 @@ mod tests {
             Cell::Markdown("## Regression Onset — Wed Feb 18\ntext".to_string()),
         ];
         assert!(validate_section_links(&cells).is_empty());
+    }
+
+    // -- frontmatter parsing --
+
+    #[test]
+    fn frontmatter_with_variables() {
+        let input = "---\nvariables:\n  - name: env\n    prefix: env\n    default: production\n---\n\n# My Notebook\nText";
+        let result = parse_markdown(input).unwrap();
+        assert!(result.template_variables.is_some());
+        let vars = result.template_variables.unwrap();
+        assert!(vars.is_array());
+        let arr = vars.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "env");
+        assert_eq!(arr[0]["prefix"], "env");
+        assert_eq!(arr[0]["default"], "production");
+        // The cells should only contain the content after the frontmatter.
+        assert_eq!(result.cells.len(), 1);
+        assert_eq!(result.cells[0], Cell::Markdown("# My Notebook\nText".to_string()));
+    }
+
+    #[test]
+    fn frontmatter_multiple_variables() {
+        let input = "---\nvariables:\n  - name: env\n    prefix: env\n    default: production\n  - name: service\n    prefix: service\n    default: \"*\"\n---\n\nContent";
+        let result = parse_markdown(input).unwrap();
+        let vars = result.template_variables.unwrap();
+        assert_eq!(vars.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn no_frontmatter() {
+        let input = "# Just markdown\nNo frontmatter here";
+        let result = parse_markdown(input).unwrap();
+        assert!(result.template_variables.is_none());
+        assert_eq!(result.cells.len(), 1);
+    }
+
+    #[test]
+    fn frontmatter_without_variables() {
+        let input = "---\ntitle: Something\n---\n\n# Content";
+        let result = parse_markdown(input).unwrap();
+        assert!(result.template_variables.is_none());
+        assert_eq!(result.cells.len(), 1);
+    }
+
+    #[test]
+    fn frontmatter_with_leading_whitespace() {
+        let input = "  \n---\nvariables:\n  - name: env\n    prefix: env\n    default: prod\n---\n\nContent";
+        let result = parse_markdown(input).unwrap();
+        assert!(result.template_variables.is_some());
     }
 }

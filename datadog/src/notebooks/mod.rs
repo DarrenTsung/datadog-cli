@@ -368,7 +368,7 @@ pub async fn run_notebooks(
             let content = std::fs::read_to_string(&file)
                 .with_context(|| format!("Failed to read file: {file}"))?;
             let content = fix_dates_in_file(&file, &content)?;
-            let mut cells = parser::parse_markdown(&content)?;
+            let parser::ParseResult { mut cells, template_variables } = parser::parse_markdown(&content)?;
             if cells.is_empty() {
                 return Err(anyhow!("No cells parsed from {file}"));
             }
@@ -378,7 +378,7 @@ pub async fn run_notebooks(
                 eprintln!("Warning: section link #{slug} does not match any heading");
             }
             let response =
-                api::create_notebook(api_key, app_key, &title, &cells, live_span).await?;
+                api::create_notebook(api_key, app_key, &title, &cells, live_span, template_variables.as_ref()).await?;
             if let Some(data) = response.data {
                 println!("Created notebook: https://app.datadoghq.com/notebook/{}", data.id);
             }
@@ -395,7 +395,7 @@ pub async fn run_notebooks(
             let content = std::fs::read_to_string(&file)
                 .with_context(|| format!("Failed to read file: {file}"))?;
             let content = fix_dates_in_file(&file, &content)?;
-            let mut cells = parser::parse_markdown(&content)?;
+            let parser::ParseResult { mut cells, template_variables } = parser::parse_markdown(&content)?;
             if cells.is_empty() {
                 return Err(anyhow!("No cells parsed from {file}"));
             }
@@ -435,7 +435,7 @@ pub async fn run_notebooks(
 
             let t3 = Instant::now();
             let response =
-                api::update_notebook(api_key, app_key, id, &title, &cells, live_span, &existing_ids).await?;
+                api::update_notebook(api_key, app_key, id, &title, &cells, live_span, &existing_ids, template_variables.as_ref()).await?;
             eprintln!("[{:.2}s] update API call", t3.elapsed().as_secs_f64());
 
             if let Some(data) = response.data {
@@ -453,6 +453,12 @@ pub async fn run_notebooks(
             let data = response
                 .data
                 .ok_or_else(|| anyhow!("No data in notebook response"))?;
+
+            // Emit template variables as frontmatter if present.
+            if let Some(vars) = data.attributes.additional_properties.get("template_variables") {
+                print!("{}", cells::template_variables_to_frontmatter(vars));
+            }
+
             let markdown: Vec<String> = data
                 .attributes
                 .cells

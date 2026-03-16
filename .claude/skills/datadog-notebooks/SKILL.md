@@ -118,6 +118,34 @@ With metric aggregation and grouping:
 | `display_type` | No       | Graph style: `"line"` (default), `"bars"`, or `"area"`.     |
 | `time`         | No       | Per-cell time override (same format as log-query `time`).    |
 
+## Template variables
+
+Notebooks can include template variables (dropdowns like `$env`, `$service` that filter queries). Define them in a YAML frontmatter block at the very top of the markdown file:
+
+```yaml
+---
+variables:
+  - name: env
+    prefix: env
+    default: production
+  - name: service
+    prefix: service
+    default: "*"
+---
+```
+
+The `---` delimited block must be the first thing in the file (ignoring leading whitespace). Only the `variables` key is recognized; other keys are ignored.
+
+Each variable object has:
+
+| Field     | Description                                                    |
+|-----------|----------------------------------------------------------------|
+| `name`    | Variable name (used as `$name` in queries)                     |
+| `prefix`  | Tag prefix to filter on (e.g. `env`, `service`)                |
+| `default` | Default value for the dropdown (e.g. `production`, `"*"`)      |
+
+When reading a notebook back (`notebooks read`), template variables are emitted as a frontmatter block, so the format round-trips.
+
 ## Example markdown file
 
 ````markdown
