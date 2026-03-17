@@ -227,6 +227,127 @@ pub fn validate_section_links(cells: &[Cell]) -> Vec<String> {
     broken
 }
 
+/// Collect all query strings from cells as (label, value) pairs.
+fn collect_query_strings(cells: &[Cell]) -> Vec<(&str, &str)> {
+    let mut out = Vec::new();
+    for cell in cells {
+        match cell {
+            Cell::LogQuery(lq) => {
+                out.push(("log-query", lq.query.as_str()));
+            }
+            Cell::MetricQuery(mq) => {
+                out.push(("metric-query", mq.query.as_str()));
+                if let Some(ref events) = mq.events {
+                    for e in events {
+                        out.push(("metric-query event overlay", e.q.as_str()));
+                    }
+                }
+            }
+            Cell::EventQuery(eq) => {
+                out.push(("event-query search", eq.search.as_str()));
+                if let Some(ref events) = eq.events {
+                    for e in events {
+                        out.push(("event-query event overlay", e.q.as_str()));
+                    }
+                }
+            }
+            Cell::Markdown(_) => {}
+        }
+    }
+    out
+}
+
+/// Find all `$name` references in a string. Returns a vec of variable names
+/// (without the `$` prefix).
+fn find_variable_refs(s: &str) -> Vec<&str> {
+    let mut refs = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            let start = i + 1;
+            let mut end = start;
+            // Variable names: alphanumeric + underscore.
+            while end < bytes.len()
+                && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+            {
+                end += 1;
+            }
+            if end > start {
+                refs.push(&s[start..end]);
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    refs
+}
+
+/// Validate template variable usage in queries. Returns warnings for:
+///
+/// 1. **Redundant prefix** — when a variable has `prefix: env`, writing
+///    `env:$env` doubles the prefix to `env:env:staging`. The correct form
+///    is just `$env`.
+///
+/// 2. **Undefined variable** — using `$foo` in a query when no template
+///    variable named `foo` is defined in the frontmatter.
+pub fn validate_template_variables(
+    cells: &[Cell],
+    template_variables: Option<&serde_json::Value>,
+) -> Vec<String> {
+    let vars = template_variables.and_then(|v| v.as_array());
+
+    // Collect defined variable names and (name, prefix) pairs.
+    let mut defined_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut prefixed_vars: Vec<(&str, &str)> = Vec::new();
+
+    if let Some(arr) = vars {
+        for v in arr {
+            if let Some(name) = v.get("name").and_then(|n| n.as_str()) {
+                defined_names.insert(name);
+                if let Some(prefix) = v.get("prefix").and_then(|p| p.as_str()) {
+                    prefixed_vars.push((name, prefix));
+                }
+            }
+        }
+    }
+
+    let query_strings = collect_query_strings(cells);
+    let mut warnings = Vec::new();
+
+    for (label, query) in &query_strings {
+        // Check for redundant prefix usage.
+        for &(name, prefix) in &prefixed_vars {
+            let bad_pattern = format!("{}:${}", prefix, name);
+            if query.contains(&bad_pattern) {
+                warnings.push(format!(
+                    "{} contains \"{}\": the ${} variable already applies \
+                     the \"{}:\" prefix, so this becomes \"{}:{}:<value>\". \
+                     Use just \"${}\" instead.",
+                    label, bad_pattern, name, prefix, prefix, prefix, name,
+                ));
+            }
+        }
+
+        // Check for undefined variable references (only when frontmatter
+        // declares a variables array, since without frontmatter the variables
+        // may be defined server-side on the notebook).
+        if vars.is_some() {
+            for var_name in find_variable_refs(query) {
+                if !defined_names.contains(var_name) {
+                    warnings.push(format!(
+                        "{} references undefined variable \"${}\"",
+                        label, var_name,
+                    ));
+                }
+            }
+        }
+    }
+
+    warnings
+}
+
 fn slugify(heading: &str) -> String {
     let raw: String = heading
         .to_lowercase()
@@ -723,5 +844,106 @@ mod tests {
         let input = "  \n---\nvariables:\n  - name: env\n    prefix: env\n    default: prod\n---\n\nContent";
         let result = parse_markdown(input).unwrap();
         assert!(result.template_variables.is_some());
+    }
+
+    // -- validate_template_variables --
+
+    #[test]
+    fn template_var_redundant_prefix_detected() {
+        let vars = serde_json::json!([
+            {"name": "env", "prefix": "env", "default": "production"}
+        ]);
+        let cells = vec![Cell::LogQuery(LogQueryCell {
+            query: "service:web env:$env".to_string(),
+            indexes: None,
+            columns: None,
+            time: None,
+        })];
+        let warnings = validate_template_variables(&cells, Some(&vars));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("env:$env"), "{}", warnings[0]);
+        assert!(warnings[0].contains("Use just \"$env\""), "{}", warnings[0]);
+    }
+
+    #[test]
+    fn template_var_correct_usage_no_warning() {
+        let vars = serde_json::json!([
+            {"name": "env", "prefix": "env", "default": "production"}
+        ]);
+        let cells = vec![Cell::LogQuery(LogQueryCell {
+            query: "service:web $env".to_string(),
+            indexes: None,
+            columns: None,
+            time: None,
+        })];
+        let warnings = validate_template_variables(&cells, Some(&vars));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn template_var_undefined_variable_detected() {
+        let vars = serde_json::json!([
+            {"name": "env", "prefix": "env", "default": "production"}
+        ]);
+        let cells = vec![Cell::LogQuery(LogQueryCell {
+            query: "service:web $env $region".to_string(),
+            indexes: None,
+            columns: None,
+            time: None,
+        })];
+        let warnings = validate_template_variables(&cells, Some(&vars));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("$region"), "{}", warnings[0]);
+        assert!(warnings[0].contains("undefined"), "{}", warnings[0]);
+    }
+
+    #[test]
+    fn template_var_no_frontmatter_skips_undefined_check() {
+        // Without frontmatter, $var references shouldn't warn since variables
+        // may be defined on the notebook server-side.
+        let cells = vec![Cell::LogQuery(LogQueryCell {
+            query: "service:web $env".to_string(),
+            indexes: None,
+            columns: None,
+            time: None,
+        })];
+        let warnings = validate_template_variables(&cells, None);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn template_var_metric_query_events_checked() {
+        let vars = serde_json::json!([
+            {"name": "env", "prefix": "env", "default": "production"}
+        ]);
+        let cells = vec![Cell::MetricQuery(cells::MetricQueryCell {
+            query: "avg:system.cpu.user{$env}".to_string(),
+            time: None,
+            title: None,
+            aliases: None,
+            display_type: None,
+            events: Some(vec![cells::EventOverlay {
+                q: "env:$env source:deploy".to_string(),
+            }]),
+        })];
+        let warnings = validate_template_variables(&cells, Some(&vars));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("event overlay"), "{}", warnings[0]);
+        assert!(warnings[0].contains("env:$env"), "{}", warnings[0]);
+    }
+
+    #[test]
+    fn template_var_no_variables_defined_but_frontmatter_exists() {
+        // Frontmatter exists but has no variables, so $env is undefined.
+        let vars = serde_json::json!([]);
+        let cells = vec![Cell::LogQuery(LogQueryCell {
+            query: "service:web $env".to_string(),
+            indexes: None,
+            columns: None,
+            time: None,
+        })];
+        let warnings = validate_template_variables(&cells, Some(&vars));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("$env"), "{}", warnings[0]);
     }
 }

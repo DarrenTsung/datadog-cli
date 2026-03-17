@@ -382,6 +382,13 @@ pub async fn run_notebooks(
             for slug in &broken {
                 eprintln!("Warning: section link #{slug} does not match any heading");
             }
+            let var_warnings = parser::validate_template_variables(&cells, template_variables.as_ref());
+            if !var_warnings.is_empty() {
+                for w in &var_warnings {
+                    eprintln!("Error: {w}");
+                }
+                return Err(anyhow!("Template variable validation failed"));
+            }
             let response =
                 api::create_notebook(api_key, app_key, &title, &cells, live_span, template_variables.as_ref()).await?;
             if let Some(data) = response.data {
@@ -411,6 +418,13 @@ pub async fn run_notebooks(
             let broken = parser::validate_section_links(&cells);
             for slug in &broken {
                 eprintln!("Warning: section link #{slug} does not match any heading");
+            }
+            let var_warnings = parser::validate_template_variables(&cells, template_variables.as_ref());
+            if !var_warnings.is_empty() {
+                for w in &var_warnings {
+                    eprintln!("Error: {w}");
+                }
+                return Err(anyhow!("Template variable validation failed"));
             }
 
             let title = match title {
