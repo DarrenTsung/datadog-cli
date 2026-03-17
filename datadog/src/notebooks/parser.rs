@@ -501,6 +501,7 @@ mod tests {
                 title: None,
                 aliases: None,
                 display_type: None,
+                events: None,
             })]
         );
     }
@@ -518,6 +519,7 @@ mod tests {
                 title: None,
                 aliases: None,
                 display_type: None,
+                events: None,
             })]
         );
     }
@@ -575,6 +577,7 @@ mod tests {
                 title: None,
                 display_type: None,
                 time: None,
+                events: None,
             })]
         );
     }
@@ -599,6 +602,7 @@ mod tests {
                 title: Some("Deploy Duration".to_string()),
                 display_type: Some("bars".to_string()),
                 time: Some(cells::CellTime::Relative("4h".to_string())),
+                events: None,
             })]
         );
     }

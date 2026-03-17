@@ -76,6 +76,16 @@ With title, aliases, and display type:
 | `title`        | No       | Graph title displayed above the timeseries widget.           |
 | `aliases`      | No       | Map of query expression to display name for the legend. Example: `{"avg:system.cpu.user{*}": "CPU Usage"}` |
 | `display_type` | No       | Graph style: `"line"` (default), `"bars"`, or `"area"`.     |
+| `events`       | No       | Array of event overlay queries. Each element is `{"q": "event query string"}`. Overlays show as vertical markers on the graph. |
+
+With event overlays:
+
+```json
+{
+  "query": "avg:system.cpu.user{env:production}",
+  "events": [{"q": "source:statsig gate:my_flag"}, {"q": "source:deploy env:production"}]
+}
+```
 
 ### Event queries (becomes Timeseries cells)
 
@@ -117,6 +127,7 @@ With metric aggregation and grouping:
 | `title`        | No       | Graph title displayed above the timeseries widget.           |
 | `display_type` | No       | Graph style: `"line"` (default), `"bars"`, or `"area"`.     |
 | `time`         | No       | Per-cell time override (same format as log-query `time`).    |
+| `events`       | No       | Array of event overlay queries (same format as metric-query `events`). |
 
 ## Template variables
 

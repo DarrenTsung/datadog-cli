@@ -9,7 +9,7 @@ use datadog_api_client::datadogV1::model::{
     NotebookMarkdownCellDefinition, NotebookMarkdownCellDefinitionType, NotebookRelativeTime,
     NotebookTimeseriesCellAttributes, TimeseriesWidgetDefinition,
     TimeseriesWidgetDefinitionType, TimeseriesWidgetExpressionAlias, TimeseriesWidgetRequest,
-    WidgetDisplayType, WidgetLiveSpan,
+    WidgetDisplayType, WidgetEvent, WidgetLiveSpan,
 };
 use serde_derive::Deserialize;
 
@@ -43,6 +43,8 @@ pub struct MetricQueryCell {
     pub aliases: Option<std::collections::HashMap<String, String>>,
     /// Display type: "line" (default), "bars", or "area".
     pub display_type: Option<String>,
+    /// Event overlays shown as vertical markers on the timeseries graph.
+    pub events: Option<Vec<EventOverlay>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -55,12 +57,21 @@ pub struct EventQueryCell {
     pub title: Option<String>,
     pub display_type: Option<String>,
     pub time: Option<CellTime>,
+    /// Event overlays shown as vertical markers on the timeseries graph.
+    pub events: Option<Vec<EventOverlay>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct EventQueryGroupBy {
     pub facet: String,
     pub limit: Option<i64>,
+}
+
+/// Event overlay query for timeseries widgets. Renders vertical markers on
+/// the graph when matching events occur (e.g., deploys, flag changes).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct EventOverlay {
+    pub q: String,
 }
 
 /// Per-cell time override. Either a relative span string like `"4h"` or an
@@ -196,6 +207,12 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
                 definition.title = Some(title.clone());
             }
 
+            // Set event overlays.
+            if let Some(ref overlays) = metric_query.events {
+                definition.events =
+                    Some(overlays.iter().map(|e| WidgetEvent::new(e.q.clone())).collect());
+            }
+
             let mut attrs = NotebookTimeseriesCellAttributes::new(definition);
             if let Some(cell_time) = &metric_query.time {
                 attrs.time = Some(Some(cell_time_to_notebook_cell_time(cell_time)));
@@ -229,6 +246,12 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
 
             if let Some(ref title) = eq.title {
                 definition.title = Some(title.clone());
+            }
+
+            // Set event overlays.
+            if let Some(ref overlays) = eq.events {
+                definition.events =
+                    Some(overlays.iter().map(|e| WidgetEvent::new(e.q.clone())).collect());
             }
 
             let mut attrs = NotebookTimeseriesCellAttributes::new(definition);
@@ -381,6 +404,16 @@ fn extract_event_query_json(
     Some(obj)
 }
 
+/// Convert a list of `WidgetEvent` to a JSON array value for embedding in
+/// the fenced code block output.
+fn widget_events_to_json(events: &[WidgetEvent]) -> serde_json::Value {
+    let arr: Vec<serde_json::Value> = events
+        .iter()
+        .map(|e| serde_json::json!({ "q": e.q }))
+        .collect();
+    serde_json::Value::Array(arr)
+}
+
 /// Convert a notebook cell response back to the markdown format the parser
 /// understands.
 pub fn notebook_cell_to_markdown(attrs: &NotebookCellResponseAttributes) -> String {
@@ -414,6 +447,11 @@ pub fn notebook_cell_to_markdown(attrs: &NotebookCellResponseAttributes) -> Stri
                 let mut obj = event_obj;
                 if let Some(title) = &ts.definition.title {
                     obj.insert("title".into(), serde_json::Value::String(title.clone()));
+                }
+                if let Some(ref events) = ts.definition.events {
+                    if !events.is_empty() {
+                        obj.insert("events".into(), widget_events_to_json(events));
+                    }
                 }
                 if let Some(Some(time)) = &ts.time {
                     obj.insert("time".into(), notebook_cell_time_to_json_value(time));
@@ -450,6 +488,11 @@ pub fn notebook_cell_to_markdown(attrs: &NotebookCellResponseAttributes) -> Stri
             }
             if let Some(title) = &ts.definition.title {
                 obj.insert("title".into(), serde_json::Value::String(title.clone()));
+            }
+            if let Some(ref events) = ts.definition.events {
+                if !events.is_empty() {
+                    obj.insert("events".into(), widget_events_to_json(events));
+                }
             }
             if let Some(Some(time)) = &ts.time {
                 obj.insert("time".into(), notebook_cell_time_to_json_value(time));
@@ -633,6 +676,7 @@ mod tests {
             title: None,
             aliases: None,
             display_type: None,
+            events: None,
         });
         let request = cell_to_create_request(&cell);
 
@@ -662,6 +706,7 @@ mod tests {
             title: None,
             aliases: None,
             display_type: None,
+            events: None,
         });
         let request = cell_to_create_request(&cell);
 
@@ -715,6 +760,7 @@ mod tests {
             title: Some("Deploy Events".to_string()),
             display_type: None,
             time: None,
+            events: None,
         });
         let request = cell_to_create_request(&cell);
 
@@ -747,6 +793,7 @@ mod tests {
             title: None,
             display_type: Some("bars".to_string()),
             time: Some(CellTime::Relative("4h".to_string())),
+            events: None,
         });
         let request = cell_to_create_request(&cell);
 
