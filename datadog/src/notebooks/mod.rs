@@ -9,6 +9,10 @@ use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
 pub struct NotebooksOpt {
+    /// Print timing information for each step.
+    #[structopt(long)]
+    verbose: bool,
+
     #[structopt(subcommand)]
     cmd: NotebooksCommand,
 }
@@ -343,6 +347,7 @@ pub async fn run_notebooks(
     app_key: &str,
     opt: NotebooksOpt,
 ) -> anyhow::Result<()> {
+    let verbose = opt.verbose;
     match opt.cmd {
         NotebooksCommand::List { limit, force } => {
             if !force && !limit.is_some_and(|l| l <= 100) {
@@ -399,7 +404,9 @@ pub async fn run_notebooks(
             if cells.is_empty() {
                 return Err(anyhow!("No cells parsed from {file}"));
             }
-            eprintln!("[{:.2}s] parsed {} cells", t0.elapsed().as_secs_f64(), cells.len());
+            if verbose {
+                eprintln!("[{:.2}s] parsed {} cells", t0.elapsed().as_secs_f64(), cells.len());
+            }
 
             let broken = parser::validate_section_links(&cells);
             for slug in &broken {
@@ -417,7 +424,9 @@ pub async fn run_notebooks(
             let title = if title.is_empty() {
                 let t1 = Instant::now();
                 let existing = api::get_notebook(api_key, app_key, id).await?;
-                eprintln!("[{:.2}s] fetched existing title", t1.elapsed().as_secs_f64());
+                if verbose {
+                    eprintln!("[{:.2}s] fetched existing title", t1.elapsed().as_secs_f64());
+                }
                 existing
                     .data
                     .map(|d| d.attributes.name)
@@ -431,17 +440,23 @@ pub async fn run_notebooks(
             // cell duplication).
             let t2 = Instant::now();
             let existing_ids = api::get_cell_ids(api_key, app_key, id).await?;
-            eprintln!("[{:.2}s] fetched {} existing cell IDs", t2.elapsed().as_secs_f64(), existing_ids.len());
+            if verbose {
+                eprintln!("[{:.2}s] fetched {} existing cell IDs", t2.elapsed().as_secs_f64(), existing_ids.len());
+            }
 
             let t3 = Instant::now();
             let response =
                 api::update_notebook(api_key, app_key, id, &title, &cells, live_span, &existing_ids, template_variables.as_ref()).await?;
-            eprintln!("[{:.2}s] update API call", t3.elapsed().as_secs_f64());
+            if verbose {
+                eprintln!("[{:.2}s] update API call", t3.elapsed().as_secs_f64());
+            }
 
             if let Some(data) = response.data {
                 println!("Updated notebook: https://app.datadoghq.com/notebook/{}", data.id);
             }
-            eprintln!("[{:.2}s] total", t0.elapsed().as_secs_f64());
+            if verbose {
+                eprintln!("[{:.2}s] total", t0.elapsed().as_secs_f64());
+            }
         }
         NotebooksCommand::Delete { id } => {
             api::delete_notebook(api_key, app_key, id).await?;

@@ -213,6 +213,9 @@ datadog notebooks update --id 12345 --file notebook.md --title "New Title"
 
 # Delete a notebook
 datadog notebooks delete --id 12345
+
+# Show timing information for debugging slow updates
+datadog notebooks --verbose update --id 12345 --file notebook.md
 ```
 
 ## Time span values
