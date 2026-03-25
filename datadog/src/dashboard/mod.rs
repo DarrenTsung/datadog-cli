@@ -382,10 +382,17 @@ fn format_widget(widget: &serde_json::Value) -> String {
                 }
             }
 
-            // Simple query field (e.g. manage_status widgets).
+            // Simple query field (e.g. manage_status widgets, list_stream).
             if req["queries"].is_null() {
                 if let Some(q) = req["query"].as_str() {
                     out.push_str(&format!("  Query: {}\n", q));
+                } else if req["query"].is_object() {
+                    // list_stream widgets use { "query_string": "...", "data_source": "..." }
+                    let qs = req["query"]["query_string"].as_str().unwrap_or("");
+                    let ds = req["query"]["data_source"].as_str().unwrap_or("");
+                    if !qs.is_empty() || !ds.is_empty() {
+                        out.push_str(&format!("  Query ({}): {}\n", ds, qs));
+                    }
                 }
             }
         }
