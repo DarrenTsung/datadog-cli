@@ -174,12 +174,16 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
             let mut request = TimeseriesWidgetRequest::new().q(metric_query.query.clone());
 
             // Set display type (line/bars/area).
+            // Default to bars for .as_count() queries since count data
+            // reads better as a bar chart.
             if let Some(ref dt) = metric_query.display_type {
                 request.display_type = Some(match dt.to_lowercase().as_str() {
                     "bars" | "bar" => WidgetDisplayType::BARS,
                     "area" => WidgetDisplayType::AREA,
                     _ => WidgetDisplayType::LINE,
                 });
+            } else if metric_query.query.contains(".as_count()") {
+                request.display_type = Some(WidgetDisplayType::BARS);
             }
 
             // Set aliases via metadata.
@@ -718,6 +722,52 @@ mod tests {
                     }
                     other => panic!("Expected NotebookRelativeTime, got {:?}", other),
                 }
+            }
+            _ => panic!("Expected NotebookTimeseriesCellAttributes"),
+        }
+    }
+
+    #[test]
+    fn metric_query_as_count_defaults_to_bars() {
+        let cell = Cell::MetricQuery(MetricQueryCell {
+            query: "count:my.metric{env:production}.as_count()".to_string(),
+            time: None,
+            title: None,
+            aliases: None,
+            display_type: None,
+            events: None,
+        });
+        let request = cell_to_create_request(&cell);
+
+        match &request.attributes {
+            NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(attrs) => {
+                assert_eq!(
+                    attrs.definition.requests[0].display_type,
+                    Some(WidgetDisplayType::BARS)
+                );
+            }
+            _ => panic!("Expected NotebookTimeseriesCellAttributes"),
+        }
+    }
+
+    #[test]
+    fn metric_query_as_count_explicit_line_overrides() {
+        let cell = Cell::MetricQuery(MetricQueryCell {
+            query: "count:my.metric{env:production}.as_count()".to_string(),
+            time: None,
+            title: None,
+            aliases: None,
+            display_type: Some("line".to_string()),
+            events: None,
+        });
+        let request = cell_to_create_request(&cell);
+
+        match &request.attributes {
+            NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(attrs) => {
+                assert_eq!(
+                    attrs.definition.requests[0].display_type,
+                    Some(WidgetDisplayType::LINE)
+                );
             }
             _ => panic!("Expected NotebookTimeseriesCellAttributes"),
         }

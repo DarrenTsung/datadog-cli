@@ -75,7 +75,7 @@ With title, aliases, and display type:
 | `time`         | No       | Per-cell time override (same format as log-query `time`). If omitted, uses the notebook's global time from `--time`. |
 | `title`        | No       | Graph title displayed above the timeseries widget.           |
 | `aliases`      | No       | Map of query expression to display name for the legend. Example: `{"avg:system.cpu.user{*}": "CPU Usage"}` |
-| `display_type` | No       | Graph style: `"line"` (default), `"bars"`, or `"area"`.     |
+| `display_type` | No       | Graph style: `"line"` (default), `"bars"`, or `"area"`. Queries containing `.as_count()` default to `"bars"`. |
 | `events`       | No       | Array of event overlay queries. Each element is `{"q": "event query string"}`. Overlays show as vertical markers on the graph. |
 
 With event overlays:
