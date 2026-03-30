@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use datadog_api_client::datadogV1::model::{
     FormulaAndFunctionMetricDataSource, FormulaAndFunctionMetricQueryDefinition,
-    FormulaAndFunctionQueryDefinition, LogQueryDefinition, LogQueryDefinitionGroupBy,
+    FormulaAndFunctionQueryDefinition, FormulaAndFunctionResponseFormat, LogQueryDefinition, LogQueryDefinitionGroupBy,
     LogQueryDefinitionSearch, LogStreamWidgetDefinition, LogStreamWidgetDefinitionType,
     LogsQueryCompute, NotebookAbsoluteTime, NotebookCellCreateRequest,
     NotebookCellCreateRequestAttributes, NotebookCellResourceType,
@@ -106,6 +106,36 @@ fn cell_time_to_notebook_cell_time(ct: &CellTime) -> NotebookCellTime {
     }
 }
 
+/// Split a comma-separated metric query string into individual queries.
+///
+/// Commas inside `{}` (tag scopes) are left alone; only top-level commas are
+/// treated as separators. This lets the `query` field hold multiple Datadog
+/// metric expressions the same way the Datadog UI displays them.
+fn split_metric_queries(query: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0u32;
+    for ch in query.chars() {
+        match ch {
+            '{' => { depth += 1; current.push(ch); }
+            '}' => { depth = depth.saturating_sub(1); current.push(ch); }
+            ',' if depth == 0 => {
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    result.push(trimmed);
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        result.push(trimmed);
+    }
+    result
+}
+
 /// Build a `LogQueryDefinition` from an `EventQueryCell`.
 fn build_event_log_query(eq: &EventQueryCell) -> LogQueryDefinition {
     let mut compute = LogsQueryCompute::new(eq.compute.clone());
@@ -180,11 +210,19 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
             NotebookCellCreateRequestAttributes::NotebookLogStreamCellAttributes(Box::new(attrs))
         }
         Cell::MetricQuery(metric_query) => {
-            let use_formulas = metric_query.queries.as_ref().is_some_and(|q| q.len() > 1);
+            // Resolve the effective queries list: either the explicit `queries`
+            // array, or by splitting a comma-separated `query` string at
+            // top-level commas (i.e. commas not inside `{}`).
+            let resolved_queries: Vec<String> = if let Some(qs) = metric_query.queries.as_ref() {
+                qs.clone()
+            } else {
+                split_metric_queries(&metric_query.query)
+            };
+            let use_formulas = resolved_queries.len() > 1;
 
             let mut request = if use_formulas {
                 // Multi-query: use the formula-and-functions API.
-                let queries_vec = metric_query.queries.as_ref().unwrap();
+                let queries_vec = &resolved_queries;
                 let ff_queries: Vec<FormulaAndFunctionQueryDefinition> = queries_vec
                     .iter()
                     .enumerate()
@@ -213,10 +251,10 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
                 TimeseriesWidgetRequest::new()
                     .queries(ff_queries)
                     .formulas(formulas)
+                    .response_format(FormulaAndFunctionResponseFormat::TIMESERIES)
             } else {
                 // Single query: use the legacy `q` field.
-                let q = metric_query.queries.as_ref()
-                    .and_then(|qs| qs.first().cloned())
+                let q = resolved_queries.first().cloned()
                     .unwrap_or_else(|| metric_query.query.clone());
                 let mut req = TimeseriesWidgetRequest::new().q(q);
 
@@ -240,9 +278,7 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
             // Set display type (line/bars/area).
             // Default to bars for .as_count() queries since count data
             // reads better as a bar chart.
-            let any_as_count = metric_query.queries.as_ref()
-                .map(|qs| qs.iter().any(|q| q.contains(".as_count()")))
-                .unwrap_or_else(|| metric_query.query.contains(".as_count()"));
+            let any_as_count = resolved_queries.iter().any(|q| q.contains(".as_count()"));
             if let Some(ref dt) = metric_query.display_type {
                 request.display_type = Some(match dt.to_lowercase().as_str() {
                     "bars" | "bar" => WidgetDisplayType::BARS,
@@ -1020,6 +1056,119 @@ mod tests {
                     attrs.definition.requests[0].display_type,
                     Some(WidgetDisplayType::LINE)
                 );
+            }
+            _ => panic!("Expected NotebookTimeseriesCellAttributes"),
+        }
+    }
+
+    #[test]
+    fn split_metric_queries_single() {
+        let result = split_metric_queries("avg:system.cpu.user{env:prod}");
+        assert_eq!(result, vec!["avg:system.cpu.user{env:prod}"]);
+    }
+
+    #[test]
+    fn split_metric_queries_comma_separated() {
+        let result = split_metric_queries(
+            "sum:foo{$env}.as_count(), sum:bar{$env}.as_count()"
+        );
+        assert_eq!(result, vec![
+            "sum:foo{$env}.as_count()",
+            "sum:bar{$env}.as_count()",
+        ]);
+    }
+
+    #[test]
+    fn split_metric_queries_preserves_commas_in_braces() {
+        let result = split_metric_queries(
+            "avg:metric{service:web,env:prod}, avg:metric{service:api,env:prod}"
+        );
+        assert_eq!(result, vec![
+            "avg:metric{service:web,env:prod}",
+            "avg:metric{service:api,env:prod}",
+        ]);
+    }
+
+    #[test]
+    fn split_metric_queries_four_percentiles() {
+        let result = split_metric_queries(
+            "p50:m{$env}, p90:m{$env}, p95:m{$env}, p99:m{$env}"
+        );
+        assert_eq!(result.len(), 4);
+    }
+
+    #[test]
+    fn comma_separated_query_uses_formulas() {
+        // The exact format from the cortex-gate session file.
+        let cell = Cell::MetricQuery(MetricQueryCell {
+            query: "sum:cortex.a{$env}.as_count(), sum:cortex.b{$env}.as_count()".to_string(),
+            time: None,
+            title: Some("Test".to_string()),
+            aliases: Some(std::collections::HashMap::from([
+                ("sum:cortex.a{$env}.as_count()".to_string(), "A".to_string()),
+                ("sum:cortex.b{$env}.as_count()".to_string(), "B".to_string()),
+            ])),
+            display_type: None,
+            events: None,
+            queries: None,
+        });
+        let request = cell_to_create_request(&cell);
+
+        match &request.attributes {
+            NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(attrs) => {
+                let req = &attrs.definition.requests[0];
+                assert!(req.queries.is_some(), "should use formula-and-functions queries");
+                assert_eq!(req.queries.as_ref().unwrap().len(), 2);
+                assert_eq!(
+                    req.response_format,
+                    Some(FormulaAndFunctionResponseFormat::TIMESERIES),
+                );
+                // Verify aliases are mapped to formulas.
+                let formulas = req.formulas.as_ref().unwrap();
+                let aliased: Vec<_> = formulas.iter().filter(|f| f.alias.is_some()).collect();
+                assert_eq!(aliased.len(), 2, "both formulas should have aliases");
+            }
+            _ => panic!("Expected NotebookTimeseriesCellAttributes"),
+        }
+    }
+
+    #[test]
+    fn multi_query_metric_cell_sets_response_format() {
+        let cell = Cell::MetricQuery(MetricQueryCell {
+            query: String::new(),
+            time: None,
+            title: Some("New vs Legacy".to_string()),
+            aliases: None,
+            display_type: None,
+            events: None,
+            queries: Some(vec![
+                "count:trace.http.request{service:foo}.as_count()".to_string(),
+                "count:trace.http.request{service:bar}.as_count()".to_string(),
+            ]),
+        });
+        let request = cell_to_create_request(&cell);
+
+        match &request.attributes {
+            NotebookCellCreateRequestAttributes::NotebookTimeseriesCellAttributes(attrs) => {
+                let req = &attrs.definition.requests[0];
+                assert!(req.queries.is_some(), "should use formula-and-functions queries");
+                assert!(req.formulas.is_some(), "should have formulas");
+                assert_eq!(
+                    req.response_format,
+                    Some(FormulaAndFunctionResponseFormat::TIMESERIES),
+                    "response_format must be TIMESERIES for formula queries"
+                );
+                // Inspect the serialized JSON to verify the payload structure.
+                let json = serde_json::to_string_pretty(&attrs.definition).unwrap();
+                eprintln!("Serialized multi-query definition:\n{json}");
+                // Verify the JSON contains the expected fields.
+                let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+                let req_json = &parsed["requests"][0];
+                assert!(req_json["queries"].is_array(), "queries should be an array in JSON");
+                assert!(req_json["formulas"].is_array(), "formulas should be an array in JSON");
+                assert_eq!(req_json["response_format"], "timeseries");
+                // Ensure no legacy `q` field is present.
+                assert!(req_json["q"].is_null(), "legacy q field should not be present");
             }
             _ => panic!("Expected NotebookTimeseriesCellAttributes"),
         }
