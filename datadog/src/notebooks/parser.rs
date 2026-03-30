@@ -236,7 +236,13 @@ fn collect_query_strings(cells: &[Cell]) -> Vec<(&str, &str)> {
                 out.push(("log-query", lq.query.as_str()));
             }
             Cell::MetricQuery(mq) => {
-                out.push(("metric-query", mq.query.as_str()));
+                if let Some(ref queries) = mq.queries {
+                    for q in queries {
+                        out.push(("metric-query", q.as_str()));
+                    }
+                } else {
+                    out.push(("metric-query", mq.query.as_str()));
+                }
                 if let Some(ref events) = mq.events {
                     for e in events {
                         out.push(("metric-query event overlay", e.q.as_str()));
@@ -700,6 +706,7 @@ mod tests {
                 aliases: None,
                 display_type: None,
                 events: None,
+                queries: None,
             })]
         );
     }
@@ -718,6 +725,7 @@ mod tests {
                 aliases: None,
                 display_type: None,
                 events: None,
+                queries: None,
             })]
         );
     }
@@ -995,6 +1003,7 @@ mod tests {
         ]);
         let cells = vec![Cell::MetricQuery(cells::MetricQueryCell {
             query: "avg:system.cpu.user{$env}".to_string(),
+            queries: None,
             time: None,
             title: None,
             aliases: None,
@@ -1050,6 +1059,7 @@ mod tests {
         ]);
         let cells = vec![Cell::MetricQuery(cells::MetricQueryCell {
             query: "avg:system.cpu.user{env:staging}".to_string(),
+            queries: None,
             time: None,
             title: None,
             aliases: None,
@@ -1130,6 +1140,7 @@ mod tests {
         ]);
         let cells = vec![Cell::MetricQuery(cells::MetricQueryCell {
             query: "avg:system.cpu.user{$env}".to_string(),
+            queries: None,
             time: None,
             title: None,
             aliases: None,

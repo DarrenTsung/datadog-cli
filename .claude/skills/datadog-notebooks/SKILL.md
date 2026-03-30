@@ -48,7 +48,7 @@ Absolute time (start/end range):
 
 ### Metric queries (becomes Timeseries cells)
 
-A fenced code block tagged ` ```metric-query ` is parsed as JSON and becomes a **Timeseries cell**. The JSON body must have a `query` field and optionally a `time` field:
+A fenced code block tagged ` ```metric-query ` is parsed as JSON and becomes a **Timeseries cell**. The JSON body must have either a `query` field (single metric) or a `queries` field (multiple metrics in one graph).
 
 ```json
 {
@@ -69,9 +69,28 @@ With title, aliases, and display type:
 }
 ```
 
+Multiple queries in a single graph (uses the formula-and-functions API):
+
+```json
+{
+  "queries": [
+    "p50:service.latency{env:production}",
+    "p95:service.latency{env:production}",
+    "p99:service.latency{env:production}"
+  ],
+  "aliases": {
+    "p50:service.latency{env:production}": "p50",
+    "p95:service.latency{env:production}": "p95",
+    "p99:service.latency{env:production}": "p99"
+  },
+  "title": "Latency Percentiles"
+}
+```
+
 | Field          | Required | Description                                                  |
 |----------------|----------|--------------------------------------------------------------|
-| `query`        | Yes      | Datadog metric query string (e.g. `"avg:system.cpu.user{*}"`) |
+| `query`        | Yes*     | Datadog metric query string (e.g. `"avg:system.cpu.user{*}"`). *Not required when `queries` is used. |
+| `queries`      | No       | Array of metric query strings for multi-line graphs. When present with 2+ entries, uses the formula-and-functions API. |
 | `time`         | No       | Per-cell time override (same format as log-query `time`). If omitted, uses the notebook's global time from `--time`. |
 | `title`        | No       | Graph title displayed above the timeseries widget.           |
 | `aliases`      | No       | Map of query expression to display name for the legend. Example: `{"avg:system.cpu.user{*}": "CPU Usage"}` |

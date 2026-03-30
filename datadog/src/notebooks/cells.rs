@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use datadog_api_client::datadogV1::model::{
+    FormulaAndFunctionMetricDataSource, FormulaAndFunctionMetricQueryDefinition,
     FormulaAndFunctionQueryDefinition, LogQueryDefinition, LogQueryDefinitionGroupBy,
     LogQueryDefinitionSearch, LogStreamWidgetDefinition, LogStreamWidgetDefinitionType,
     LogsQueryCompute, NotebookAbsoluteTime, NotebookCellCreateRequest,
@@ -9,7 +10,7 @@ use datadog_api_client::datadogV1::model::{
     NotebookMarkdownCellDefinition, NotebookMarkdownCellDefinitionType, NotebookRelativeTime,
     NotebookTimeseriesCellAttributes, TimeseriesWidgetDefinition,
     TimeseriesWidgetDefinitionType, TimeseriesWidgetExpressionAlias, TimeseriesWidgetRequest,
-    WidgetDisplayType, WidgetEvent, WidgetLiveSpan,
+    WidgetDisplayType, WidgetEvent, WidgetFormula, WidgetLiveSpan,
 };
 use serde_derive::Deserialize;
 
@@ -33,7 +34,15 @@ pub struct LogQueryCell {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct MetricQueryCell {
+    /// Single metric query string (legacy API path). When `queries` is also
+    /// present, this field is ignored.
+    #[serde(default)]
     pub query: String,
+    /// Multiple metric queries for a single widget (formula-and-functions API).
+    /// Each string is a Datadog metric query expression. When present, the
+    /// write path builds `FormulaAndFunctionMetricQueryDefinition` objects
+    /// with auto-generated names (`query1`, `query2`, ...) and formulas.
+    pub queries: Option<Vec<String>>,
     pub time: Option<CellTime>,
     /// Graph title displayed above the timeseries widget.
     pub title: Option<String>,
@@ -171,34 +180,77 @@ pub fn cell_to_create_request(cell: &Cell) -> NotebookCellCreateRequest {
             NotebookCellCreateRequestAttributes::NotebookLogStreamCellAttributes(Box::new(attrs))
         }
         Cell::MetricQuery(metric_query) => {
-            let mut request = TimeseriesWidgetRequest::new().q(metric_query.query.clone());
+            let use_formulas = metric_query.queries.as_ref().is_some_and(|q| q.len() > 1);
+
+            let mut request = if use_formulas {
+                // Multi-query: use the formula-and-functions API.
+                let queries_vec = metric_query.queries.as_ref().unwrap();
+                let ff_queries: Vec<FormulaAndFunctionQueryDefinition> = queries_vec
+                    .iter()
+                    .enumerate()
+                    .map(|(i, q)| {
+                        FormulaAndFunctionQueryDefinition::FormulaAndFunctionMetricQueryDefinition(
+                            Box::new(FormulaAndFunctionMetricQueryDefinition::new(
+                                FormulaAndFunctionMetricDataSource::METRICS,
+                                format!("query{}", i + 1),
+                                q.clone(),
+                            )),
+                        )
+                    })
+                    .collect();
+                let aliases = metric_query.aliases.as_ref();
+                let formulas: Vec<WidgetFormula> = queries_vec
+                    .iter()
+                    .enumerate()
+                    .map(|(i, q)| {
+                        let mut f = WidgetFormula::new(format!("query{}", i + 1));
+                        if let Some(alias) = aliases.and_then(|a| a.get(q.as_str())) {
+                            f.alias = Some(alias.clone());
+                        }
+                        f
+                    })
+                    .collect();
+                TimeseriesWidgetRequest::new()
+                    .queries(ff_queries)
+                    .formulas(formulas)
+            } else {
+                // Single query: use the legacy `q` field.
+                let q = metric_query.queries.as_ref()
+                    .and_then(|qs| qs.first().cloned())
+                    .unwrap_or_else(|| metric_query.query.clone());
+                let mut req = TimeseriesWidgetRequest::new().q(q);
+
+                // Set aliases via metadata (legacy path).
+                if let Some(ref aliases) = metric_query.aliases {
+                    let metadata: Vec<TimeseriesWidgetExpressionAlias> = aliases
+                        .iter()
+                        .map(|(expr, alias)| {
+                            let mut a = TimeseriesWidgetExpressionAlias::new(expr.clone());
+                            a.alias_name = Some(alias.clone());
+                            a
+                        })
+                        .collect();
+                    if !metadata.is_empty() {
+                        req.metadata = Some(metadata);
+                    }
+                }
+                req
+            };
 
             // Set display type (line/bars/area).
             // Default to bars for .as_count() queries since count data
             // reads better as a bar chart.
+            let any_as_count = metric_query.queries.as_ref()
+                .map(|qs| qs.iter().any(|q| q.contains(".as_count()")))
+                .unwrap_or_else(|| metric_query.query.contains(".as_count()"));
             if let Some(ref dt) = metric_query.display_type {
                 request.display_type = Some(match dt.to_lowercase().as_str() {
                     "bars" | "bar" => WidgetDisplayType::BARS,
                     "area" => WidgetDisplayType::AREA,
                     _ => WidgetDisplayType::LINE,
                 });
-            } else if metric_query.query.contains(".as_count()") {
+            } else if any_as_count {
                 request.display_type = Some(WidgetDisplayType::BARS);
-            }
-
-            // Set aliases via metadata.
-            if let Some(ref aliases) = metric_query.aliases {
-                let metadata: Vec<TimeseriesWidgetExpressionAlias> = aliases
-                    .iter()
-                    .map(|(expr, alias)| {
-                        let mut a = TimeseriesWidgetExpressionAlias::new(expr.clone());
-                        a.alias_name = Some(alias.clone());
-                        a
-                    })
-                    .collect();
-                if !metadata.is_empty() {
-                    request.metadata = Some(metadata);
-                }
             }
 
             let mut definition = TimeseriesWidgetDefinition::new(
@@ -321,14 +373,21 @@ fn notebook_cell_time_to_json_value(time: &NotebookCellTime) -> serde_json::Valu
 /// Extract the metric query string from a `TimeseriesWidgetRequest`'s
 /// `queries` array (the newer formula-based format). Returns the `query`
 /// field from the first `FormulaAndFunctionMetricQueryDefinition`.
-fn extract_metric_query_from_queries(req: &TimeseriesWidgetRequest) -> Option<String> {
-    let queries = req.queries.as_ref()?;
-    for q in queries {
-        if let FormulaAndFunctionQueryDefinition::FormulaAndFunctionMetricQueryDefinition(def) = q {
-            return Some(def.query.clone());
-        }
-    }
-    None
+/// Extract all metric queries from a formula-and-functions `queries` array.
+/// Returns `(name, query_expression)` pairs preserving order.
+fn extract_all_metric_queries(
+    queries: &[FormulaAndFunctionQueryDefinition],
+) -> Vec<(String, String)> {
+    queries
+        .iter()
+        .filter_map(|q| {
+            if let FormulaAndFunctionQueryDefinition::FormulaAndFunctionMetricQueryDefinition(def) = q {
+                Some((def.name.clone(), def.query.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Try to extract an event-query JSON object from the formula-and-functions
@@ -605,21 +664,77 @@ pub fn notebook_cell_to_markdown(attrs: &NotebookCellResponseAttributes) -> Stri
                 // array (used by formula-based widget definitions).
                 if let Some(q) = &req.q {
                     obj.insert("query".into(), serde_json::Value::String(q.clone()));
-                } else if let Some(query_str) = extract_metric_query_from_queries(req) {
-                    obj.insert("query".into(), serde_json::Value::String(query_str));
+                } else if let Some(queries) = &req.queries {
+                    // Extract all metric queries from the formula-and-functions array.
+                    let metric_queries = extract_all_metric_queries(queries);
+                    if metric_queries.len() > 1 {
+                        // Multi-query: emit as "queries" array.
+                        let arr: Vec<serde_json::Value> = metric_queries.iter()
+                            .map(|(_, q)| serde_json::Value::String(q.clone()))
+                            .collect();
+                        obj.insert("queries".into(), serde_json::Value::Array(arr));
+
+                        // Build aliases from formulas (formula name → alias).
+                        if let Some(formulas) = &req.formulas {
+                            let mut aliases = serde_json::Map::new();
+                            for formula in formulas {
+                                if let Some(alias) = &formula.alias {
+                                    // Map formula name (e.g. "query1") back to the
+                                    // actual query expression.
+                                    if let Some((_, query_expr)) = metric_queries.iter()
+                                        .find(|(name, _)| *name == formula.formula)
+                                    {
+                                        aliases.insert(
+                                            query_expr.clone(),
+                                            serde_json::Value::String(alias.clone()),
+                                        );
+                                    }
+                                }
+                            }
+                            if !aliases.is_empty() {
+                                obj.insert("aliases".into(), serde_json::Value::Object(aliases));
+                            }
+                        }
+                    } else if let Some((_, q)) = metric_queries.first() {
+                        // Single query in the array: emit as legacy "query" string.
+                        obj.insert("query".into(), serde_json::Value::String(q.clone()));
+
+                        // Single-query formula alias.
+                        if let Some(formulas) = &req.formulas {
+                            let mut aliases = serde_json::Map::new();
+                            for formula in formulas {
+                                if let Some(alias) = &formula.alias {
+                                    if let Some((_, query_expr)) = metric_queries.iter()
+                                        .find(|(name, _)| *name == formula.formula)
+                                    {
+                                        aliases.insert(
+                                            query_expr.clone(),
+                                            serde_json::Value::String(alias.clone()),
+                                        );
+                                    }
+                                }
+                            }
+                            if !aliases.is_empty() {
+                                obj.insert("aliases".into(), serde_json::Value::Object(aliases));
+                            }
+                        }
+                    }
                 }
                 if let Some(dt) = &req.display_type {
                     obj.insert("display_type".into(), serde_json::Value::String(dt.to_string()));
                 }
-                if let Some(metadata) = &req.metadata {
-                    let mut aliases = serde_json::Map::new();
-                    for alias in metadata {
-                        if let Some(name) = &alias.alias_name {
-                            aliases.insert(alias.expression.clone(), serde_json::Value::String(name.clone()));
+                // Legacy metadata aliases (only when using the `q` field path).
+                if obj.contains_key("query") && !obj.contains_key("aliases") {
+                    if let Some(metadata) = &req.metadata {
+                        let mut aliases = serde_json::Map::new();
+                        for alias in metadata {
+                            if let Some(name) = &alias.alias_name {
+                                aliases.insert(alias.expression.clone(), serde_json::Value::String(name.clone()));
+                            }
                         }
-                    }
-                    if !aliases.is_empty() {
-                        obj.insert("aliases".into(), serde_json::Value::Object(aliases));
+                        if !aliases.is_empty() {
+                            obj.insert("aliases".into(), serde_json::Value::Object(aliases));
+                        }
                     }
                 }
             }
@@ -814,6 +929,7 @@ mod tests {
             aliases: None,
             display_type: None,
             events: None,
+            queries: None,
         });
         let request = cell_to_create_request(&cell);
 
@@ -844,6 +960,7 @@ mod tests {
             aliases: None,
             display_type: None,
             events: None,
+            queries: None,
         });
         let request = cell_to_create_request(&cell);
 
@@ -869,6 +986,7 @@ mod tests {
             aliases: None,
             display_type: None,
             events: None,
+            queries: None,
         });
         let request = cell_to_create_request(&cell);
 
@@ -892,6 +1010,7 @@ mod tests {
             aliases: None,
             display_type: Some("line".to_string()),
             events: None,
+            queries: None,
         });
         let request = cell_to_create_request(&cell);
 
