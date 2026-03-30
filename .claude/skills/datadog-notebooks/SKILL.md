@@ -208,6 +208,9 @@ datadog notebooks create --file notebook.md --title "Error Investigation"
 # Create with custom time span
 datadog notebooks create --file notebook.md --title "Investigation" --time 4h
 
+# Create despite hardcoded-value warnings
+datadog notebooks create --file notebook.md --title "Investigation" --ack-warnings
+
 # List notebooks (limit required, or use --force)
 datadog notebooks list --limit 20
 datadog notebooks list --force
@@ -308,3 +311,4 @@ Then create a Chrome bookmark and paste the clipboard as the URL.
 - Invalid JSON inside a special block produces an error
 - The `query` field is required in log-query and metric-query JSON; `data_source`, `search`, and `compute` are required in event-query JSON
 - Section links (`[text](#slug)`) must reference a heading that exists in the document — warn if a link target has no matching heading
+- If a template variable with a prefix is defined (e.g. `$env` with `prefix: env`) but a query hardcodes a value for that prefix (e.g. `env:staging`), the CLI warns and fails. Pass `--ack-warnings` to bypass this check on `create` and `update`.

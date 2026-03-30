@@ -43,6 +43,10 @@ pub enum NotebooksCommand {
         /// Time span for log-stream cells (e.g. 1h, 4h, 1d, 2d, 1w).
         #[structopt(long, default_value = "1h")]
         time: String,
+
+        /// Proceed despite warnings (e.g. hardcoded values for template variables).
+        #[structopt(long)]
+        ack_warnings: bool,
     },
 
     /// Update an existing notebook from a markdown file.
@@ -62,6 +66,10 @@ pub enum NotebooksCommand {
         /// Time span for log-stream cells (e.g. 1h, 4h, 1d, 2d, 1w).
         #[structopt(long, default_value = "1h")]
         time: String,
+
+        /// Proceed despite warnings (e.g. hardcoded values for template variables).
+        #[structopt(long)]
+        ack_warnings: bool,
     },
 
     /// Delete a notebook.
@@ -368,7 +376,7 @@ pub async fn run_notebooks(
                 eprintln!("No notebooks found.");
             }
         }
-        NotebooksCommand::Create { file, title, time } => {
+        NotebooksCommand::Create { file, title, time, ack_warnings } => {
             let live_span = api::parse_live_span(&time)?;
             let content = std::fs::read_to_string(&file)
                 .with_context(|| format!("Failed to read file: {file}"))?;
@@ -389,6 +397,15 @@ pub async fn run_notebooks(
                 }
                 return Err(anyhow!("Template variable validation failed"));
             }
+            let hardcoded_warnings = parser::warn_hardcoded_variable_values(&cells, template_variables.as_ref());
+            if !hardcoded_warnings.is_empty() && !ack_warnings {
+                for w in &hardcoded_warnings {
+                    eprintln!("Warning: {w}");
+                }
+                return Err(anyhow!(
+                    "Hardcoded values found for template variables (pass --ack-warnings to proceed)"
+                ));
+            }
             let response =
                 api::create_notebook(api_key, app_key, &title, &cells, live_span, template_variables.as_ref()).await?;
             if let Some(data) = response.data {
@@ -400,6 +417,7 @@ pub async fn run_notebooks(
             file,
             title,
             time,
+            ack_warnings,
         } => {
             let t0 = Instant::now();
 
@@ -425,6 +443,15 @@ pub async fn run_notebooks(
                     eprintln!("Error: {w}");
                 }
                 return Err(anyhow!("Template variable validation failed"));
+            }
+            let hardcoded_warnings = parser::warn_hardcoded_variable_values(&cells, template_variables.as_ref());
+            if !hardcoded_warnings.is_empty() && !ack_warnings {
+                for w in &hardcoded_warnings {
+                    eprintln!("Warning: {w}");
+                }
+                return Err(anyhow!(
+                    "Hardcoded values found for template variables (pass --ack-warnings to proceed)"
+                ));
             }
 
             let title = match title {

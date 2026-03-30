@@ -348,6 +348,83 @@ pub fn validate_template_variables(
     warnings
 }
 
+/// Warn when queries hardcode a value for a tag that has a corresponding
+/// template variable with a prefix. For example, if `$env` is defined with
+/// `prefix: env`, writing `env:staging` in a query defeats the purpose of
+/// the variable. Returns warnings (not errors) that can be bypassed with
+/// `--ack-warnings`.
+pub fn warn_hardcoded_variable_values(
+    cells: &[Cell],
+    template_variables: Option<&serde_json::Value>,
+) -> Vec<String> {
+    let vars = template_variables.and_then(|v| v.as_array());
+
+    let mut prefixed_vars: Vec<(&str, &str)> = Vec::new();
+    if let Some(arr) = vars {
+        for v in arr {
+            if let (Some(name), Some(prefix)) = (
+                v.get("name").and_then(|n| n.as_str()),
+                v.get("prefix").and_then(|p| p.as_str()),
+            ) {
+                if !prefix.is_empty() {
+                    prefixed_vars.push((name, prefix));
+                }
+            }
+        }
+    }
+
+    if prefixed_vars.is_empty() {
+        return Vec::new();
+    }
+
+    let query_strings = collect_query_strings(cells);
+    let mut warnings = Vec::new();
+
+    for (label, query) in &query_strings {
+        for &(name, prefix) in &prefixed_vars {
+            let pattern = format!("{prefix}:");
+            let mut search_from = 0;
+            while let Some(rel_pos) = query[search_from..].find(&pattern) {
+                let abs_pos = search_from + rel_pos;
+                let value_start = abs_pos + pattern.len();
+
+                // Ensure the prefix is at a word boundary (not inside "myenv:").
+                let at_word_boundary = abs_pos == 0 || {
+                    let prev = query.as_bytes()[abs_pos - 1];
+                    !prev.is_ascii_alphanumeric() && prev != b'_'
+                };
+
+                if at_word_boundary && value_start < query.len() {
+                    let next_byte = query.as_bytes()[value_start];
+                    // Skip $variable refs (caught by redundant-prefix check) and wildcards.
+                    if next_byte != b'$'
+                        && next_byte != b'*'
+                        && (next_byte.is_ascii_alphanumeric() || next_byte == b'"')
+                    {
+                        let value_end = query[value_start..]
+                            .find(|c: char| {
+                                !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.'
+                            })
+                            .map(|e| value_start + e)
+                            .unwrap_or(query.len());
+                        let hardcoded = &query[value_start..value_end];
+                        warnings.push(format!(
+                            "{label} contains hardcoded \"{prefix}:{hardcoded}\" \
+                             but template variable ${name} is defined with prefix \
+                             \"{prefix}\"; use ${name} instead, or pass \
+                             --ack-warnings to proceed anyway",
+                        ));
+                    }
+                }
+
+                search_from = value_start.max(search_from + 1);
+            }
+        }
+    }
+
+    warnings
+}
+
 fn slugify(heading: &str) -> String {
     let raw: String = heading
         .to_lowercase()
@@ -945,5 +1022,137 @@ mod tests {
         let warnings = validate_template_variables(&cells, Some(&vars));
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("$env"), "{}", warnings[0]);
+    }
+
+    // -- warn_hardcoded_variable_values --
+
+    #[test]
+    fn hardcoded_value_detected() {
+        let vars = serde_json::json!([
+            {"name": "env", "prefix": "env", "default": "staging"}
+        ]);
+        let cells = vec![Cell::LogQuery(LogQueryCell {
+            query: "service:web env:staging".to_string(),
+            indexes: None,
+            columns: None,
+            time: None,
+        })];
+        let warnings = warn_hardcoded_variable_values(&cells, Some(&vars));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("env:staging"), "{}", warnings[0]);
+        assert!(warnings[0].contains("$env"), "{}", warnings[0]);
+    }
+
+    #[test]
+    fn hardcoded_value_in_metric_query_braces() {
+        let vars = serde_json::json!([
+            {"name": "env", "prefix": "env", "default": "production"}
+        ]);
+        let cells = vec![Cell::MetricQuery(cells::MetricQueryCell {
+            query: "avg:system.cpu.user{env:staging}".to_string(),
+            time: None,
+            title: None,
+            aliases: None,
+            display_type: None,
+            events: None,
+        })];
+        let warnings = warn_hardcoded_variable_values(&cells, Some(&vars));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("env:staging"), "{}", warnings[0]);
+    }
+
+    #[test]
+    fn wildcard_not_flagged() {
+        let vars = serde_json::json!([
+            {"name": "env", "prefix": "env", "default": "production"}
+        ]);
+        let cells = vec![Cell::LogQuery(LogQueryCell {
+            query: "service:web env:*".to_string(),
+            indexes: None,
+            columns: None,
+            time: None,
+        })];
+        let warnings = warn_hardcoded_variable_values(&cells, Some(&vars));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn variable_ref_not_flagged() {
+        let vars = serde_json::json!([
+            {"name": "env", "prefix": "env", "default": "production"}
+        ]);
+        let cells = vec![Cell::LogQuery(LogQueryCell {
+            query: "service:web $env".to_string(),
+            indexes: None,
+            columns: None,
+            time: None,
+        })];
+        let warnings = warn_hardcoded_variable_values(&cells, Some(&vars));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn partial_prefix_not_flagged() {
+        // "myenv:staging" should NOT trigger for a variable with prefix "env".
+        let vars = serde_json::json!([
+            {"name": "env", "prefix": "env", "default": "production"}
+        ]);
+        let cells = vec![Cell::LogQuery(LogQueryCell {
+            query: "myenv:staging".to_string(),
+            indexes: None,
+            columns: None,
+            time: None,
+        })];
+        let warnings = warn_hardcoded_variable_values(&cells, Some(&vars));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn no_prefix_variable_not_flagged() {
+        // Variables without a prefix should not trigger hardcoded warnings.
+        let vars = serde_json::json!([
+            {"name": "env", "default": "production"}
+        ]);
+        let cells = vec![Cell::LogQuery(LogQueryCell {
+            query: "env:staging".to_string(),
+            indexes: None,
+            columns: None,
+            time: None,
+        })];
+        let warnings = warn_hardcoded_variable_values(&cells, Some(&vars));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn hardcoded_in_event_overlay() {
+        let vars = serde_json::json!([
+            {"name": "env", "prefix": "env", "default": "production"}
+        ]);
+        let cells = vec![Cell::MetricQuery(cells::MetricQueryCell {
+            query: "avg:system.cpu.user{$env}".to_string(),
+            time: None,
+            title: None,
+            aliases: None,
+            display_type: None,
+            events: Some(vec![cells::EventOverlay {
+                q: "env:staging source:deploy".to_string(),
+            }]),
+        })];
+        let warnings = warn_hardcoded_variable_values(&cells, Some(&vars));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("event overlay"), "{}", warnings[0]);
+        assert!(warnings[0].contains("env:staging"), "{}", warnings[0]);
+    }
+
+    #[test]
+    fn no_template_variables_no_warnings() {
+        let cells = vec![Cell::LogQuery(LogQueryCell {
+            query: "env:staging".to_string(),
+            indexes: None,
+            columns: None,
+            time: None,
+        })];
+        let warnings = warn_hardcoded_variable_values(&cells, None);
+        assert!(warnings.is_empty());
     }
 }
