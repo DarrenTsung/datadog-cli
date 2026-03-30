@@ -331,6 +331,71 @@ fn extract_metric_query_from_queries(req: &TimeseriesWidgetRequest) -> Option<St
     None
 }
 
+/// Try to extract an event-query JSON object from the formula-and-functions
+/// `queries` array (the newer API path). This handles timeseries cells that
+/// use `FormulaAndFunctionEventQueryDefinition` rather than the legacy
+/// `log_query`/`event_query` fields.
+fn extract_ff_event_query_json(
+    req: &TimeseriesWidgetRequest,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let queries = req.queries.as_ref()?;
+    for q in queries {
+        if let FormulaAndFunctionQueryDefinition::FormulaAndFunctionEventQueryDefinition(def) = q {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "data_source".into(),
+                serde_json::Value::String(def.data_source.to_string()),
+            );
+            if let Some(ref search) = def.search {
+                obj.insert(
+                    "search".into(),
+                    serde_json::Value::String(search.query.clone()),
+                );
+            }
+            obj.insert(
+                "compute".into(),
+                serde_json::Value::String(def.compute.aggregation.to_string()),
+            );
+            if let Some(ref metric) = def.compute.metric {
+                obj.insert(
+                    "metric".into(),
+                    serde_json::Value::String(metric.clone()),
+                );
+            }
+            if let Some(ref groups) = def.group_by {
+                let arr: Vec<serde_json::Value> = groups
+                    .iter()
+                    .map(|g| {
+                        let mut m = serde_json::Map::new();
+                        m.insert(
+                            "facet".into(),
+                            serde_json::Value::String(g.facet.clone()),
+                        );
+                        if let Some(limit) = g.limit {
+                            m.insert(
+                                "limit".into(),
+                                serde_json::Value::Number(serde_json::Number::from(limit)),
+                            );
+                        }
+                        serde_json::Value::Object(m)
+                    })
+                    .collect();
+                if !arr.is_empty() {
+                    obj.insert("group_by".into(), serde_json::Value::Array(arr));
+                }
+            }
+            if let Some(ref dt) = req.display_type {
+                obj.insert(
+                    "display_type".into(),
+                    serde_json::Value::String(dt.to_string()),
+                );
+            }
+            return Some(obj);
+        }
+    }
+    None
+}
+
 /// Try to extract an event-query JSON object from a timeseries cell. Returns
 /// `Some(map)` when the first request uses one of the data-source-specific
 /// query fields (`event_query`, `log_query`, `rum_query`, etc.).
@@ -408,6 +473,56 @@ fn extract_event_query_json(
     Some(obj)
 }
 
+/// Try to extract a log-query JSON object from a `list_stream` cell that was
+/// misparsed as a timeseries cell by the SDK. The list_stream request fields
+/// (`query`, `columns`, `response_format`) end up in the `TimeseriesWidgetRequest`
+/// `additional_properties` since they don't map to named timeseries fields.
+fn extract_list_stream_log_query(
+    ts: &NotebookTimeseriesCellAttributes,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    // Only applies when the definition type is not actually "timeseries".
+    if matches!(ts.definition.type_, TimeseriesWidgetDefinitionType::TIMESERIES) {
+        return None;
+    }
+    let req = ts.definition.requests.first()?;
+    // list_stream requests store the query object in additional_properties.
+    let query_val = req.additional_properties.get("query")?;
+    let query_obj = query_val.as_object()?;
+    let query_string = query_obj.get("query_string")?.as_str()?;
+
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "query".into(),
+        serde_json::Value::String(query_string.to_string()),
+    );
+
+    // Extract columns (list_stream format: [{field, width}, ...] → just the field names).
+    if let Some(columns_val) = req.additional_properties.get("columns") {
+        if let Some(columns_arr) = columns_val.as_array() {
+            let col_names: Vec<serde_json::Value> = columns_arr
+                .iter()
+                .filter_map(|c| c.get("field")?.as_str().map(|s| serde_json::Value::String(s.to_string())))
+                // Skip the standard columns that log-query always shows.
+                .filter(|v| !matches!(v.as_str(), Some("status_line" | "timestamp" | "content")))
+                .collect();
+            if !col_names.is_empty() {
+                obj.insert("columns".into(), serde_json::Value::Array(col_names));
+            }
+        }
+    }
+
+    // Extract indexes from the query object if non-empty.
+    if let Some(indexes_val) = query_obj.get("indexes") {
+        if let Some(indexes_arr) = indexes_val.as_array() {
+            if !indexes_arr.is_empty() {
+                obj.insert("indexes".into(), serde_json::Value::Array(indexes_arr.clone()));
+            }
+        }
+    }
+
+    Some(obj)
+}
+
 /// Convert a list of `WidgetEvent` to a JSON array value for embedding in
 /// the fenced code block output.
 fn widget_events_to_json(events: &[WidgetEvent]) -> serde_json::Value {
@@ -445,9 +560,27 @@ pub fn notebook_cell_to_markdown(attrs: &NotebookCellResponseAttributes) -> Stri
             )
         }
         NotebookCellResponseAttributes::NotebookTimeseriesCellAttributes(ts) => {
+            // The SDK may misparse list_stream cells as timeseries because the
+            // NotebookCellResponseAttributes deserializer tries timeseries
+            // before checking the inner definition type. Detect and handle.
+            if let Some(log_obj) = extract_list_stream_log_query(ts) {
+                let mut obj = log_obj;
+                if let Some(Some(time)) = &ts.time {
+                    obj.insert("time".into(), notebook_cell_time_to_json_value(time));
+                }
+                return format!(
+                    "```log-query\n{}\n```",
+                    serde_json::to_string_pretty(&obj).unwrap()
+                );
+            }
+
             // Check if this is an event-query cell by looking for an event
-            // query definition in the requests.
-            if let Some(event_obj) = extract_event_query_json(ts) {
+            // query definition in the requests (legacy fields first, then the
+            // newer formula-and-functions queries array).
+            let event_obj = extract_event_query_json(ts).or_else(|| {
+                ts.definition.requests.first().and_then(extract_ff_event_query_json)
+            });
+            if let Some(event_obj) = event_obj {
                 let mut obj = event_obj;
                 if let Some(title) = &ts.definition.title {
                     obj.insert("title".into(), serde_json::Value::String(title.clone()));
