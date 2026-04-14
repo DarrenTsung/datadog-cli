@@ -389,7 +389,7 @@ fn render_results(
                 }
                 print_formula_series_header(info);
                 let buckets = bucket_points(pts, from_ms, interval.seconds);
-                print_rollup_table(&buckets, None);
+                print_rollup_table(&buckets, None, to_ms - from_ms);
             }
         }
         (false, None, Some(pivot)) => {
@@ -408,7 +408,7 @@ fn render_results(
                 }
                 print_formula_series_header(info);
                 let buckets = bucket_points(pts, from_ms, interval.seconds);
-                print_rollup_table(&buckets, Some(pivot));
+                print_rollup_table(&buckets, Some(pivot), to_ms - from_ms);
             }
         }
         (true, Some(interval), None) => {
@@ -754,15 +754,17 @@ pub(crate) fn print_chart(points: &[(f64, f64)], from_ms: f64, to_ms: f64, y_min
 // Output: rollup table
 // ---------------------------------------------------------------------------
 
-fn print_rollup_table(buckets: &[Bucket], pivot_ms: Option<f64>) {
+fn print_rollup_table(buckets: &[Bucket], pivot_ms: Option<f64>, query_span_ms: f64) {
     if buckets.is_empty() {
         println!("(no data points)");
         return;
     }
 
-    // Determine whether to include day-of-week in timestamps.
-    let span_ms = buckets.last().unwrap().end_ms - buckets.first().unwrap().start_ms;
-    let include_date = span_ms > 86_400_000.0;
+    // Include day-of-week when the query time range spans more than a day.
+    // We use the query range (not the bucket span) because sparse data can
+    // return only a few points from an earlier part of a multi-day window,
+    // and without dates the user can't tell which day they belong to.
+    let include_date = query_span_ms > 86_400_000.0;
 
     println!(
         "{:<22}| {:>9} | {:>9} | {:>9} | {:>5}",
@@ -1190,9 +1192,9 @@ mod tests {
                 values: vec![4.0, 5.0],
             },
         ];
-        print_rollup_table(&buckets, None);
-        print_rollup_table(&buckets, Some(1_700_003_600_000.0));
-        print_rollup_table(&[], None);
+        print_rollup_table(&buckets, None, 3_600_000.0);
+        print_rollup_table(&buckets, Some(1_700_003_600_000.0), 86_500_000.0);
+        print_rollup_table(&[], None, 3_600_000.0);
     }
 
     #[test]
