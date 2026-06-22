@@ -60,6 +60,32 @@ datadog logs --time-range "last 1 hour" --query "env:production" \
   --add-columns "@version,@file.key"
 ```
 
+### Deep-link to a specific log
+
+Use `--deep-links` to get a clickable Datadog URL per row that opens with that
+exact log **highlighted** (the UI's `event=<id>` deep-link). Each row also gets
+a short `id` handle so you can pick one log to share without quoting the long
+opaque Datadog event id:
+
+```bash
+datadog logs --time-range "last 30 minutes" --query "service:ugit @repo:*sessions*" \
+  --limit 5 --deep-links --columns "timestamp,service,@repo"
+```
+
+Each output row gains two fields:
+- `id` — a short, **unique** handle (default 6 hex chars; grows only if two
+  rows would otherwise collide). Use it to refer to a log, e.g. "share `2c327b`".
+- `url` — the full deep-link that opens that specific log, highlighted, in a
+  flex-tier stream view bounded to the query's time window.
+
+Notes:
+- There is no shorter canonical Datadog log id — the only identifier is the long
+  opaque `event=` string. The `id` handle is synthesized (a stable hash prefix);
+  the full id stays embedded in `url`.
+- The `url`'s `cols` reflect `--columns` (minus `timestamp`/`message`), falling
+  back to `host,service`.
+- Tune the handle length with `--id-min-len <N>` (default 6).
+
 ### Resume pagination
 
 If a search is cut off by rate limiting, the CLI prints the last cursor. Resume with `--cursor`:
@@ -85,6 +111,8 @@ datadog logs --time-range "last 1 day" --query "service:web" \
 | `--add-columns`   | No                                | Comma-separated columns to append to `--columns`                           |
 | `--all-columns`   | No                                | Output all attributes for each log entry instead of selected columns       |
 | `--sort-by`       | No                                | Sort order: `newest` (default) or `oldest`                                 |
+| `--deep-links`    | No                                | Add a short unique `id` handle and a `url` that deep-links to each log (highlighted) |
+| `--id-min-len`    | No                                | Minimum length of the `--deep-links` `id` handle (default: 6; grows to stay unique) |
 
 *Either `--datadog-url` or both `--time-range` and `--query` must be provided. `--limit` must be <= 100 unless `--force` is used.
 
